@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Curtain Installation Previewer",
+  "description": "An application to preview curtain installations in real room photos using AI, helping clients choose styles, fabrics, colors, and tracks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

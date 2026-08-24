@@ -4,7 +4,7 @@ import {
   Ruler, Sliders, FileText, CheckCircle2, Layout, Maximize2 
 } from "lucide-react";
 import { CurtainArea, Settings } from "../types";
-import { generateId, storage } from "../lib/storage";
+import { generateId } from "../lib/storage";
 import { 
   SOLID_FABRICS, SHEER_FABRICS, HEM_STYLES, CURTAIN_STYLES, 
   USAGE_TYPES, TRACK_TYPES, HANGING_TYPES, DISTANCE_OPTIONS 
@@ -34,6 +34,7 @@ interface CurtainAreaDrawerProps {
   parentDistanceTop: string;
   parentDistanceBottom: string;
   parentAccessories: string;
+  settings: Settings;
 }
 
 export const CurtainAreaDrawer: React.FC<CurtainAreaDrawerProps> = ({
@@ -60,8 +61,8 @@ export const CurtainAreaDrawer: React.FC<CurtainAreaDrawerProps> = ({
   parentDistanceTop,
   parentDistanceBottom,
   parentAccessories,
+  settings,
 }) => {
-  const settings = storage.getSettings();
 
   const curtainStyles = settings.styleMaterials?.map((s) => s.name) || CURTAIN_STYLES;
   const hemStyles = settings.hemMaterials?.map((h) => h.name) || HEM_STYLES;
@@ -847,93 +848,78 @@ export const CurtainAreaDrawer: React.FC<CurtainAreaDrawerProps> = ({
             <div className="bg-slate-50/50 p-5 rounded-2xl border border-slate-200/60 space-y-4">
               <h6 className="text-xs font-black uppercase text-slate-900 tracking-wider flex items-center gap-1.5 border-b border-slate-100 pb-2">
                 <Sliders className="w-4 h-4 text-indigo-500" />
-                <span>ข้อกำหนดและการติดตั้ง (Synchronized Window Specifications)</span>
+                <span>ข้อกำหนดและการติดตั้ง (Synchronized Specifications)</span>
               </h6>
 
-              <div className="bg-white rounded-xl border border-slate-200/60 overflow-hidden divide-y divide-slate-100">
-                <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
-                    <span className="text-xs font-bold text-slate-500">รูปแบบผ้าม่าน (Curtain Style)</span>
+              <div className="bg-white rounded-xl border border-slate-200/60 overflow-hidden divide-y divide-slate-100 p-1 text-xs">
+                {/* Visual spec grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3.5">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-0.5">รูปแบบผ้าม่าน (Curtain Style)</span>
+                    <span className="font-extrabold text-slate-800">{parentStyle || "ตามค่ามาตรฐาน"}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-black text-slate-900">{parentStyle || "ไม่ได้ระบุ"}</span>
-                    <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">ซิงค์อัตโนมัติ</span>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-0.5">ระยะชายม่าน (Hem Style)</span>
+                    <span className="font-extrabold text-indigo-600">{parentHemStyleText || "พอดีพื้น"}</span>
                   </div>
-                </div>
-
-                <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
-                    <span className="text-xs font-bold text-slate-500">รูปแบบการใช้งาน (Operation)</span>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-0.5">การติดตั้งรางม่าน (Mounting)</span>
+                    <span className="font-extrabold text-slate-800">{parentMountingType || "ไม่ระบุ"}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-black text-slate-900">{parentLayer1Style || "ไม่ได้ระบุ"}</span>
-                    <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">ซิงค์อัตโนมัติ</span>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-0.5">การแขวนม่าน (Hanging Type)</span>
+                    <span className="font-extrabold text-slate-800">{parentHangingType || "ไม่ระบุ"}</span>
                   </div>
                 </div>
 
-                <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
-                    <span className="text-xs font-bold text-slate-500">ประเภทรางม่าน (Track Type)</span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 p-3.5 bg-slate-50/40">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-0.5">ชั้นที่ 1 (Solid Layer Spec)</span>
+                    <div className="text-[11px] font-semibold text-slate-700 space-y-0.5">
+                      <div><span className="text-slate-400 font-bold">ใช้งาน:</span> {parentLayer1Style || "ไม่ระบุ"}</div>
+                      <div><span className="text-slate-400 font-bold">ราง:</span> {parentTrack1Style || "ไม่ระบุ"}</div>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-black text-slate-900">{parentTrack1Style || "ไม่ได้ระบุ"}</span>
-                    <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">ซิงค์อัตโนมัติ</span>
-                  </div>
+                  {isDoubleLayer && (
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider mb-0.5">ชั้นที่ 2 (Sheer Layer Spec)</span>
+                      <div className="text-[11px] font-semibold text-slate-700 space-y-0.5">
+                        <div><span className="text-slate-400 font-bold">ใช้งาน:</span> {parentLayer2Style || "ไม่ระบุ"}</div>
+                        <div><span className="text-slate-400 font-bold">ราง:</span> {parentTrack2Style || "ไม่ระบุ"}</div>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
-                    <span className="text-xs font-bold text-slate-500">การแขวนม่าน (Hanging Type)</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-black text-slate-900">{parentHangingType || "ไม่ได้ระบุ"}</span>
-                    <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">ซิงค์อัตโนมัติ</span>
-                  </div>
-                </div>
-
-                <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
-                    <span className="text-xs font-bold text-slate-500">ระยะชายม่าน (Hem Style)</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-black text-slate-900">{parentHemStyleText || "ไม่ได้ระบุ"}</span>
-                    <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">ซิงค์อัตโนมัติ</span>
-                  </div>
-                </div>
-
-                <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div className="flex items-center gap-2.5">
-                    <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
-                    <span className="text-xs font-bold text-slate-500">ระยะเผื่อรอบวงกบ (Clearances Offsets)</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-black text-slate-700 bg-slate-50 px-2 py-1 rounded">
-                      ซ้าย: <strong className="text-slate-950">{parentDistanceLeft || "พอดี"}</strong> | 
-                      ขวา: <strong className="text-slate-950">{parentDistanceRight || "พอดี"}</strong> | 
-                      บน: <strong className="text-slate-950">{parentDistanceTop || "พอดี"}</strong> | 
-                      ล่าง: <strong className="text-slate-950">{parentDistanceBottom || "พอดี"}</strong>
-                    </span>
-                    <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">ซิงค์อัตโนมัติ</span>
+                {/* Clearances read-only summary */}
+                <div className="p-3.5 space-y-2">
+                  <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">ระยะเผื่อรอบวงกบ (Clearance Offsets)</span>
+                  <div className="grid grid-cols-4 gap-2 text-center text-[11px]">
+                    <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                      <span className="text-[9px] font-bold text-slate-400 block uppercase mb-0.5">ซ้าย</span>
+                      <span className="font-extrabold text-slate-700">{parentDistanceLeft || "0"}</span>
+                    </div>
+                    <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                      <span className="text-[9px] font-bold text-slate-400 block uppercase mb-0.5">ขวา</span>
+                      <span className="font-extrabold text-slate-700">{parentDistanceRight || "0"}</span>
+                    </div>
+                    <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                      <span className="text-[9px] font-bold text-slate-400 block uppercase mb-0.5">บน</span>
+                      <span className="font-extrabold text-slate-700">{parentDistanceTop || "0"}</span>
+                    </div>
+                    <div className="bg-slate-50 p-2 rounded-lg border border-slate-100">
+                      <span className="text-[9px] font-bold text-slate-400 block uppercase mb-0.5">ล่าง</span>
+                      <span className="font-extrabold text-slate-700">{parentDistanceBottom || "พอดีพื้น"}</span>
+                    </div>
                   </div>
                 </div>
 
                 {parentAccessories && (
-                  <div className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div className="flex items-center gap-2.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-indigo-500"></span>
-                      <span className="text-xs font-bold text-slate-500">อุปกรณ์เสริม (Accessories)</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-slate-900 max-w-xs truncate" title={parentAccessories}>
-                        {parentAccessories}
-                      </span>
-                      <span className="text-[9px] font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">ซิงค์อัตโนมัติ</span>
-                    </div>
+                  <div className="p-3.5 flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">อุปกรณ์เสริม (Accessories)</span>
+                    <span className="text-xs font-black text-slate-700 max-w-xs truncate" title={parentAccessories}>
+                      {parentAccessories}
+                    </span>
                   </div>
                 )}
               </div>

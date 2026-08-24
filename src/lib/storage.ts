@@ -51,12 +51,27 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 const DEFAULT_EMPLOYEES: Employee[] = [
-  { id: "1", name: "ผู้ดูแลระบบ (Admin)", aiQuota: 100, aiUsed: 0, username: "admin", password: "123", role: "admin" },
+  { id: "1", name: "ผู้ดูแลระบบ (Admin)", aiQuota: 100, aiUsed: 0, username: "T58121", password: "Admin", role: "admin" },
   { id: "2", name: "คุณอรพรรณ (Designer)", aiQuota: 30, aiUsed: 4, username: "designer1", password: "123", role: "designer" },
   { id: "3", name: "คุณธีรเดช (Sales Representative)", aiQuota: 30, aiUsed: 12, username: "sales1", password: "123", role: "installer" },
 ];
 
 export const storage = {
+  safeSetItem(key: string, value: string): boolean {
+    try {
+      localStorage.setItem(key, value);
+      return true;
+    } catch (e) {
+      console.error(`Failed to save key "${key}" to localStorage:`, e);
+      if (e instanceof DOMException && (e.name === "QuotaExceededError" || e.name === "NS_ERROR_DOM_QUOTA_REACHED")) {
+        alert("⚠️ หน่วยความจำบราวเซอร์เต็ม (LocalStorage Quota Exceeded)\n\nไม่สามารถบันทึกข้อมูลบางส่วนเนื่องจากมีรูปภาพจำลอง AI หรือไฟล์ตัวอย่างวัสดุขนาดใหญ่เกินไปในระบบ กรุณาลบงานเก่าๆ หรือลบรูปภาพตัวอย่างวัสดุบางตัวออกเพื่อเพิ่มพื้นที่");
+      } else {
+        alert("⚠️ ไม่สามารถเขียนข้อมูลลงบราวเซอร์ได้: " + (e as Error).message);
+      }
+      return false;
+    }
+  },
+
   getJobs(): Job[] {
     const data = localStorage.getItem(KEYS.JOBS);
     if (!data) return [];
@@ -75,16 +90,16 @@ export const storage = {
     } else {
       jobs.push({ ...job, createdAt: Date.now(), updatedAt: Date.now() });
     }
-    localStorage.setItem(KEYS.JOBS, JSON.stringify(jobs));
+    this.safeSetItem(KEYS.JOBS, JSON.stringify(jobs));
   },
 
   deleteJob(id: string): void {
     const jobs = this.getJobs().filter((j) => j.id !== id);
-    localStorage.setItem(KEYS.JOBS, JSON.stringify(jobs));
+    this.safeSetItem(KEYS.JOBS, JSON.stringify(jobs));
 
     // Also cascade delete windows of this job
     const windows = this.getWindows().filter((w) => w.jobId !== id);
-    localStorage.setItem(KEYS.WINDOWS, JSON.stringify(windows));
+    this.safeSetItem(KEYS.WINDOWS, JSON.stringify(windows));
   },
 
   getWindows(): WindowItem[] {
@@ -109,18 +124,18 @@ export const storage = {
     } else {
       windows.push(window);
     }
-    localStorage.setItem(KEYS.WINDOWS, JSON.stringify(windows));
+    this.safeSetItem(KEYS.WINDOWS, JSON.stringify(windows));
   },
 
   deleteWindow(id: string): void {
     const windows = this.getWindows().filter((w) => w.id !== id);
-    localStorage.setItem(KEYS.WINDOWS, JSON.stringify(windows));
+    this.safeSetItem(KEYS.WINDOWS, JSON.stringify(windows));
   },
 
   getEmployees(): Employee[] {
     const data = localStorage.getItem(KEYS.EMPLOYEES);
     if (!data) {
-      localStorage.setItem(KEYS.EMPLOYEES, JSON.stringify(DEFAULT_EMPLOYEES));
+      this.safeSetItem(KEYS.EMPLOYEES, JSON.stringify(DEFAULT_EMPLOYEES));
       return DEFAULT_EMPLOYEES;
     }
     try {
@@ -138,7 +153,7 @@ export const storage = {
     } else {
       employees.push(employee);
     }
-    localStorage.setItem(KEYS.EMPLOYEES, JSON.stringify(employees));
+    this.safeSetItem(KEYS.EMPLOYEES, JSON.stringify(employees));
   },
 
   incrementEmployeeAiUsage(employeeId: string): void {
@@ -152,17 +167,18 @@ export const storage = {
 
   deleteEmployee(id: string): void {
     const employees = this.getEmployees().filter((e) => e.id !== id);
-    localStorage.setItem(KEYS.EMPLOYEES, JSON.stringify(employees));
+    this.safeSetItem(KEYS.EMPLOYEES, JSON.stringify(employees));
   },
 
   getSettings(): Settings {
     const DEFAULT_STYLE_MATERIALS: StyleMaterial[] = [
-      { id: "style-1", name: "ม่านจีบ", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"] },
-      { id: "style-2", name: "ม่านตาไก่", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"] },
-      { id: "style-3", name: "ม่านพับ", imageBase64: "", category: "roman", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"] },
-      { id: "style-4", name: "ม่านลอน", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"] },
-      { id: "style-5", name: "ม่านม้วน", imageBase64: "", category: "roller", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"] },
-      { id: "style-6", name: "มู่ลี่ไม้", imageBase64: "", category: "blind", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"] },
+      { id: "style-1", name: "ม่านจีบ", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "pinch pleat curtains" },
+      { id: "style-2", name: "ม่านตาไก่", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "eyelet grommet curtains" },
+      { id: "style-3", name: "ม่านพับ", imageBase64: "", category: "roman", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"], styleEnForAi: "roman shades" },
+      { id: "style-4", name: "ม่านลอน", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "wave fold curtains" },
+      { id: "style-7", name: "ม่านลอนกลับ", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "back-fold wave fold curtains" },
+      { id: "style-5", name: "ม่านม้วน", imageBase64: "", category: "roller", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"], styleEnForAi: "roller shades" },
+      { id: "style-6", name: "มู่ลี่ไม้", imageBase64: "", category: "blind", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"], styleEnForAi: "venetian wood blinds" },
     ];
 
     const DEFAULT_HEM_MATERIALS = [
@@ -271,11 +287,16 @@ export const storage = {
       settings.styleMaterials = DEFAULT_STYLE_MATERIALS;
       modified = true;
     } else {
-      // update style materials to make sure they have categories & operationOptions
+      // update style materials to make sure they have categories, operationOptions & styleEnForAi
       settings.styleMaterials = settings.styleMaterials.map((sm, i) => {
         const found = DEFAULT_STYLE_MATERIALS.find(d => d.name === sm.name || d.id === sm.id);
         if (found) {
-          return { ...sm, category: sm.category || found.category, operationOptions: sm.operationOptions || found.operationOptions };
+          return { 
+            ...sm, 
+            category: sm.category || found.category, 
+            operationOptions: sm.operationOptions || found.operationOptions,
+            styleEnForAi: sm.styleEnForAi || found.styleEnForAi || ""
+          };
         }
         return sm;
       });
@@ -331,13 +352,13 @@ export const storage = {
     }
 
     if (modified) {
-      localStorage.setItem(KEYS.SETTINGS, JSON.stringify(settings));
+      this.safeSetItem(KEYS.SETTINGS, JSON.stringify(settings));
     }
 
     return settings;
   },
 
   saveSettings(settings: Settings): void {
-    localStorage.setItem(KEYS.SETTINGS, JSON.stringify(settings));
+    this.safeSetItem(KEYS.SETTINGS, JSON.stringify(settings));
   },
 };

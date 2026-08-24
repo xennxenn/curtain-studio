@@ -24,6 +24,7 @@ export interface StyleMaterial {
   imageBase64?: string;
   category?: "curtain" | "blind" | "roller" | "roman"; // ประเภทรูปแบบ
   operationOptions?: string[]; // ตัวเลือกการใช้งาน เช่น รวบซ้าย, รวบขวา, แยกกลาง
+  styleEnForAi?: string; // คำสั่ง AI ภาษาอังกฤษสำหรับรูปแบบม่านนี้
 }
 
 export interface HemMaterial {
@@ -56,6 +57,12 @@ export interface Settings {
   hangingTypes?: string[];
   usageTypes?: string[];
   clearanceOptions?: string[];
+  clearanceTopOptions?: string[];
+  companyLogoBase64?: string;
+  companyLogoSize?: "S" | "M" | "L" | "XL";
+  defaultDistanceLeft?: string;
+  defaultDistanceRight?: string;
+  defaultDistanceTop?: string;
 }
 
 export interface CurtainArea {
@@ -83,6 +90,9 @@ export interface CurtainArea {
   trackType: string;       // รางม่าน
   notes: string;
   layerDisplayType?: "ทั้งหมด" | "ม่านทึบ" | "ม่านโปร่ง";
+  styleEnForAi?: string;
+  sheerStyle?: string;       // รูปแบบม่านโปร่ง
+  sheerStyleEnForAi?: string; // คำสั่ง AI ภาษาอังกฤษสำหรับม่านโปร่ง
 }
 
 export interface WindowItem {
@@ -116,6 +126,9 @@ export interface WindowItem {
   distanceBottom: string;  // "พอดีพื้น"
   notes: string;           // "หมายเหตุเฉพาะบานนี้"
   isDoubleLayer?: boolean; // ผ้าม่าน 2 ชั้นหรือไม่
+  styleEnForAi?: string;   // คำสั่ง AI สำหรับม่านนี้โดยเฉพาะ (ภาษาอังกฤษ)
+  sheerStyle?: string;     // รูปแบบม่านโปร่ง
+  sheerStyleEnForAi?: string; // คำสั่ง AI สำหรับม่านโปร่งโดยเฉพาะ (ภาษาอังกฤษ)
 
   // Base64 Images
   preImageBase64: string | null;     // ภาพหน้างานเดิม (ก่อนติดตั้ง)
@@ -128,6 +141,8 @@ export interface WindowItem {
   aiDescription: string;
   
   areas?: CurtainArea[]; // Multiple drawn polygon areas
+  orderIndex?: number;   // สำหรับจัดเรียงลำดับจุดติดตั้ง
+  isHidden?: boolean;    // สำหรับซ่อนจุดติดตั้งจากใบเสนอราคา/รายงาน
 }
 
 export interface Job {

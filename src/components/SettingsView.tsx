@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { 
   Plus, Trash2, Users, Database, ShieldAlert, BadgeCheck, 
-  Palette, FileImage, Layers, Tag, Ruler, Sliders, Eye, Lock, Unlock, FolderUp, Edit3
+  Palette, FileImage, Layers, Tag, Ruler, Sliders, Eye, Lock, Unlock, FolderUp, Edit3, Search, AlertCircle, X, Info, Files
 } from "lucide-react";
 import { Employee, Settings, FabricMaterial, StyleMaterial, HemMaterial } from "../types";
 import { generateId } from "../lib/storage";
@@ -9,7 +9,7 @@ import { generateId } from "../lib/storage";
 interface SettingsViewProps {
   employees: Employee[];
   settings: Settings;
-  onSaveSettings: (settings: Settings) => void;
+  onSaveSettings: (settings: Settings, onProgress?: (pct: number) => void) => Promise<void>;
   onSaveEmployee: (employee: Employee) => void;
   onDeleteEmployee: (id: string) => void;
   activeEmployeeId: string;
@@ -18,11 +18,76 @@ interface SettingsViewProps {
 export const SettingsView: React.FC<SettingsViewProps> = ({
   employees,
   settings,
-  onSaveSettings,
+  onSaveSettings: propOnSaveSettings,
   onSaveEmployee,
   onDeleteEmployee,
   activeEmployeeId,
 }) => {
+  const [saveProgress, setSaveProgress] = useState<number | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+
+  const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast((prev) => (prev?.message === message ? null : prev));
+    }, 4000);
+  };
+
+  const onSaveSettings = async (updatedSettings: Settings) => {
+    setIsSaving(true);
+    setSaveProgress(0);
+    try {
+      await propOnSaveSettings(updatedSettings, (pct) => {
+        setSaveProgress(pct);
+      });
+      // Delay slightly for smooth completion animation
+      setTimeout(() => {
+        showToast("สำเร็จ: บันทึกการเปลี่ยนแปลงข้อมูลระบบเรียบร้อยแล้ว!", "success");
+      }, 300);
+    } catch (err: any) {
+      showToast(`บันทึกไม่สำเร็จ: ${err?.message || "เกิดข้อผิดพลาดในการบันทึกข้อมูล"}`, "error");
+    } finally {
+      setIsSaving(false);
+      setSaveProgress(null);
+    }
+  };
+
+  const handleClearList = async () => {
+    if (clearConfirmInput.trim() !== "CONFIRM") {
+      showToast("กรุณากรอกคำว่า CONFIRM ให้ถูกต้องเพื่อยืนยันการล้างข้อมูล", "error");
+      return;
+    }
+
+    if (!clearTarget) return;
+
+    let updatedSettings = { ...settings };
+    let label = "";
+
+    if (clearTarget === "solid") {
+      updatedSettings.solidFabricMaterials = [];
+      label = "ผ้าม่านทึบ";
+    } else if (clearTarget === "sheer") {
+      updatedSettings.sheerFabricMaterials = [];
+      label = "ผ้าม่านโปร่ง";
+    } else if (clearTarget === "blind") {
+      updatedSettings.blindMaterials = [];
+      label = "มู่ลี่";
+    } else if (clearTarget === "roller") {
+      updatedSettings.rollerMaterials = [];
+      label = "ม่านม้วน";
+    }
+
+    try {
+      await onSaveSettings(updatedSettings);
+    } catch (err) {
+      showToast(`ไม่สามารถล้างข้อมูลได้: ${err instanceof Error ? err.message : String(err)}`, "error");
+    } finally {
+      setClearTarget(null);
+      setClearConfirmInput("");
+    }
+  };
+
   const [activeTab, setActiveTab] = useState<
     "employees" | "styles" | "hems" | "solid_fabrics" | "sheer_fabrics" | "blinds_rollers" | "general"
   >("solid_fabrics");
@@ -47,6 +112,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [newStyleCategory, setNewStyleCategory] = useState<"curtain" | "blind" | "roller" | "roman">("curtain");
   const [newStyleOps, setNewStyleOps] = useState<string>("รวบซ้าย, รวบขวา, แยกกลาง");
   const [newStyleImg, setNewStyleImg] = useState<string>("");
+  const [newStyleEnForAi, setNewStyleEnForAi] = useState("");
 
   // Hem State
   const [newHemName, setNewHemName] = useState("");
@@ -67,6 +133,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [blindType, setBlindType] = useState("Wood Blinds"); // Wood Blinds, Roller, Fabric Tape
   const [blindImg, setBlindImg] = useState<string>("");
 
+  // Editing state trackers for editing existing entries
+  const [editingEmployeeId, setEditingEmployeeId] = useState<string | null>(null);
+  const [editingStyleId, setEditingStyleId] = useState<string | null>(null);
+  const [editingHemId, setEditingHemId] = useState<string | null>(null);
+  const [editingSolidId, setEditingSolidId] = useState<string | null>(null);
+  const [editingSheerId, setEditingSheerId] = useState<string | null>(null);
+  const [editingBlindId, setEditingBlindId] = useState<string | null>(null);
+
+  // Search queries for fabrics
+  const [solidSearch, setSolidSearch] = useState("");
+  const [sheerSearch, setSheerSearch] = useState("");
+
+  // Clear lists confirmation state
+  const [clearTarget, setClearTarget] = useState<"solid" | "sheer" | "blind" | "roller" | null>(null);
+  const [clearConfirmInput, setClearConfirmInput] = useState("");
+
   // Helper to convert image files to Base64
   const processImage = (file: File, onComplete: (base64: string) => void) => {
     const reader = new FileReader();
@@ -74,14 +156,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement("canvas");
-        const MAX_WIDTH = 400; // Keep swatches compact
+        const MAX_WIDTH = 400; // Increased width for pristine high-definition swatches in PDF
         const scale = MAX_WIDTH / img.width;
         canvas.width = MAX_WIDTH;
         canvas.height = img.height * scale;
         const ctx = canvas.getContext("2d");
         if (ctx) {
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          const compressedBase64 = canvas.toDataURL("image/jpeg", 0.75);
+          const compressedBase64 = canvas.toDataURL("image/jpeg", 0.85); // High quality for crisp PDF rendering
           onComplete(compressedBase64);
         }
       };
@@ -110,17 +192,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       let parsedFabricName = "";
       let parsedColorName = "";
 
-      if (pathParts.length >= 2) {
+      if (pathParts.length >= 2 && pathParts[pathParts.length - 2] !== "") {
         // Folder name is fabric brand name
         parsedFabricName = pathParts[pathParts.length - 2].toUpperCase();
         // File name is color name
         const fileName = pathParts[pathParts.length - 1];
         parsedColorName = fileName.substring(0, fileName.lastIndexOf(".")).toUpperCase();
       } else {
-        // Fallback if flat upload
-        parsedFabricName = "IMPORTED_FABRIC";
-        const fileName = file.name;
-        parsedColorName = fileName.substring(0, fileName.lastIndexOf(".")).toUpperCase();
+        // Fallback if flat upload: try to parse brand and color from file name
+        const fileNameNoExt = file.name.substring(0, file.name.lastIndexOf("."));
+        // Try delimiters: space-hyphen-space " - ", underscore "_", hyphen "-"
+        let parsed = false;
+        const delimiters = [" - ", "_", " -", "- ", "-"];
+        for (const delim of delimiters) {
+          const parts = fileNameNoExt.split(delim);
+          if (parts.length >= 2) {
+            parsedFabricName = parts[0].trim().toUpperCase();
+            parsedColorName = parts.slice(1).join(delim).trim().toUpperCase();
+            parsed = true;
+            break;
+          }
+        }
+        if (!parsed) {
+          parsedFabricName = "IMPORTED";
+          parsedColorName = fileNameNoExt.trim().toUpperCase();
+        }
       }
 
       try {
@@ -130,14 +226,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             const img = new Image();
             img.onload = () => {
               const canvas = document.createElement("canvas");
-              const MAX_WIDTH = 400;
+              const MAX_WIDTH = 400; // Increased width for pristine high-definition swatches in PDF
               const scale = MAX_WIDTH / img.width;
               canvas.width = MAX_WIDTH;
               canvas.height = img.height * scale;
               const ctx = canvas.getContext("2d");
               if (ctx) {
                 ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                resolve(canvas.toDataURL("image/jpeg", 0.75));
+                resolve(canvas.toDataURL("image/jpeg", 0.85)); // Use 0.85 quality for sharp swatches
               } else reject(new Error("Canvas error"));
             };
             img.src = evt.target?.result as string;
@@ -177,7 +273,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           blindMaterials: [...(settings.blindMaterials || []), ...importedItems],
         });
       }
-      alert(`นำเข้าโฟลเดอร์เสร็จสิ้น! บันทึกสำเร็จทั้งหมด ${processedCount} รายการ โดยดึง "ชื่อผ้า" จากชื่อโฟลเดอร์ และ "สีผ้า" จากชื่อไฟล์รูปภาพ`);
+      showToast(`นำเข้าโฟลเดอร์เสร็จสิ้น! บันทึกสำเร็จทั้งหมด ${processedCount} รายการ โดยดึง "ชื่อผ้า" จากชื่อโฟลเดอร์ และ "สีผ้า" จากชื่อไฟล์รูปภาพ`, "success");
     }
   };
 
@@ -185,31 +281,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleAddEmployee = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newEmpName.trim()) return;
+    
+    const existingEmp = editingEmployeeId ? employees.find(emp => emp.id === editingEmployeeId) : null;
+    
     onSaveEmployee({
-      id: generateId(),
+      id: editingEmployeeId || generateId(),
       name: newEmpName.trim(),
       username: newEmpUsername.trim() || undefined,
       password: newEmpPassword.trim() || undefined,
       role: newEmpRole,
       aiQuota: newEmpQuota,
-      aiUsed: 0,
+      aiUsed: existingEmp ? (existingEmp.aiUsed || 0) : 0,
     });
+    
+    setEditingEmployeeId(null);
     setNewEmpName("");
     setNewEmpUsername("");
     setNewEmpPassword("");
     setNewEmpRole("designer");
     setNewEmpQuota(30);
+    showToast(editingEmployeeId ? "แก้ไขข้อมูลพนักงานเรียบร้อยแล้ว!" : "เพิ่มพนักงานเข้าระบบเรียบร้อยแล้ว!", "success");
   };
 
   const handleAdminVerify = (e: React.FormEvent) => {
     e.preventDefault();
     const foundAdmin = employees.find((emp) => emp.role === "admin");
-    const correctPassword = foundAdmin?.password || "123";
-    if (adminPasswordInput === correctPassword || adminPasswordInput === "admin") {
+    const correctPassword = foundAdmin?.password || "Admin";
+    if (adminPasswordInput === correctPassword || adminPasswordInput === "Admin") {
       setIsPasswordUnlocked(true);
       setAdminPasswordInput("");
     } else {
-      alert("รหัสผ่านผู้ดูแลระบบไม่ถูกต้อง!");
+      showToast("รหัสผ่านผู้ดูแลระบบไม่ถูกต้อง!", "error");
     }
   };
 
@@ -219,21 +321,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     if (!newStyleName.trim()) return;
     const styleMaterials = settings.styleMaterials || [];
     const opsList = newStyleOps.split(",").map((s) => s.trim()).filter(Boolean);
-    const newItem: StyleMaterial = {
-      id: generateId(),
-      name: newStyleName.trim(),
-      category: newStyleCategory,
-      operationOptions: opsList.length > 0 ? opsList : undefined,
-      imageBase64: newStyleImg || undefined,
-    };
-    onSaveSettings({
-      ...settings,
-      styleMaterials: [...styleMaterials, newItem],
-    });
+
+    if (editingStyleId) {
+      // Edit Mode
+      const updated = styleMaterials.map((item) =>
+        item.id === editingStyleId
+          ? {
+              ...item,
+              name: newStyleName.trim(),
+              category: newStyleCategory,
+              operationOptions: opsList.length > 0 ? opsList : undefined,
+              imageBase64: newStyleImg || undefined,
+              styleEnForAi: newStyleEnForAi.trim() || undefined,
+            }
+          : item
+      );
+      onSaveSettings({
+        ...settings,
+        styleMaterials: updated,
+      });
+      setEditingStyleId(null);
+    } else {
+      // Create Mode
+      const newItem: StyleMaterial = {
+        id: generateId(),
+        name: newStyleName.trim(),
+        category: newStyleCategory,
+        operationOptions: opsList.length > 0 ? opsList : undefined,
+        imageBase64: newStyleImg || undefined,
+        styleEnForAi: newStyleEnForAi.trim() || undefined,
+      };
+      onSaveSettings({
+        ...settings,
+        styleMaterials: [...styleMaterials, newItem],
+      });
+    }
+
     setNewStyleName("");
     setNewStyleCategory("curtain");
     setNewStyleOps("รวบซ้าย, รวบขวา, แยกกลาง");
     setNewStyleImg("");
+    setNewStyleEnForAi("");
   };
 
   const handleRemoveStyle = (id: string) => {
@@ -242,6 +370,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       ...settings,
       styleMaterials: styleMaterials.filter((x) => x.id !== id),
     });
+    if (editingStyleId === id) setEditingStyleId(null);
   };
 
   // Hem operations
@@ -249,15 +378,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     e.preventDefault();
     if (!newHemName.trim()) return;
     const hemMaterials = settings.hemMaterials || [];
-    const newItem: HemMaterial = {
-      id: generateId(),
-      name: newHemName.trim(),
-      imageBase64: newHemImg || undefined,
-    };
-    onSaveSettings({
-      ...settings,
-      hemMaterials: [...hemMaterials, newItem],
-    });
+
+    if (editingHemId) {
+      // Edit Mode
+      const updated = hemMaterials.map((item) =>
+        item.id === editingHemId
+          ? {
+              ...item,
+              name: newHemName.trim(),
+              imageBase64: newHemImg || undefined,
+            }
+          : item
+      );
+      onSaveSettings({
+        ...settings,
+        hemMaterials: updated,
+      });
+      setEditingHemId(null);
+    } else {
+      // Create Mode
+      const newItem: HemMaterial = {
+        id: generateId(),
+        name: newHemName.trim(),
+        imageBase64: newHemImg || undefined,
+      };
+      onSaveSettings({
+        ...settings,
+        hemMaterials: [...hemMaterials, newItem],
+      });
+    }
+
     setNewHemName("");
     setNewHemImg("");
   };
@@ -268,6 +418,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       ...settings,
       hemMaterials: hemMaterials.filter((x) => x.id !== id),
     });
+    if (editingHemId === id) setEditingHemId(null);
   };
 
   // Solid fabric operations
@@ -275,17 +426,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     e.preventDefault();
     if (!fabricBrand.trim() || !fabricColorName.trim()) return;
     const list = settings.solidFabricMaterials || [];
-    const newItem: FabricMaterial = {
-      id: generateId(),
-      name: fabricBrand.trim().toUpperCase(),
-      colorName: fabricColorName.trim().toUpperCase(),
-      type: fabricType,
-      imageBase64: fabricImg || undefined,
-    };
-    onSaveSettings({
-      ...settings,
-      solidFabricMaterials: [...list, newItem],
-    });
+
+    if (editingSolidId) {
+      // Edit Mode
+      const updated = list.map((item) =>
+        item.id === editingSolidId
+          ? {
+              ...item,
+              name: fabricBrand.trim().toUpperCase(),
+              colorName: fabricColorName.trim().toUpperCase(),
+              type: fabricType,
+              imageBase64: fabricImg || undefined,
+            }
+          : item
+      );
+      onSaveSettings({
+        ...settings,
+        solidFabricMaterials: updated,
+      });
+      setEditingSolidId(null);
+    } else {
+      // Create Mode
+      const newItem: FabricMaterial = {
+        id: generateId(),
+        name: fabricBrand.trim().toUpperCase(),
+        colorName: fabricColorName.trim().toUpperCase(),
+        type: fabricType,
+        imageBase64: fabricImg || undefined,
+      };
+      onSaveSettings({
+        ...settings,
+        solidFabricMaterials: [...list, newItem],
+      });
+    }
+
     setFabricBrand("");
     setFabricColorName("");
     setFabricType("Blackout");
@@ -298,6 +472,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       ...settings,
       solidFabricMaterials: list.filter((x) => x.id !== id),
     });
+    if (editingSolidId === id) setEditingSolidId(null);
   };
 
   // Sheer fabric operations
@@ -305,17 +480,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     e.preventDefault();
     if (!fabricBrand.trim() || !fabricColorName.trim()) return;
     const list = settings.sheerFabricMaterials || [];
-    const newItem: FabricMaterial = {
-      id: generateId(),
-      name: fabricBrand.trim().toUpperCase(),
-      colorName: fabricColorName.trim().toUpperCase(),
-      type: "Sheer",
-      imageBase64: fabricImg || undefined,
-    };
-    onSaveSettings({
-      ...settings,
-      sheerFabricMaterials: [...list, newItem],
-    });
+
+    if (editingSheerId) {
+      // Edit Mode
+      const updated = list.map((item) =>
+        item.id === editingSheerId
+          ? {
+              ...item,
+              name: fabricBrand.trim().toUpperCase(),
+              colorName: fabricColorName.trim().toUpperCase(),
+              type: "Sheer",
+              imageBase64: fabricImg || undefined,
+            }
+          : item
+      );
+      onSaveSettings({
+        ...settings,
+        sheerFabricMaterials: updated,
+      });
+      setEditingSheerId(null);
+    } else {
+      // Create Mode
+      const newItem: FabricMaterial = {
+        id: generateId(),
+        name: fabricBrand.trim().toUpperCase(),
+        colorName: fabricColorName.trim().toUpperCase(),
+        type: "Sheer",
+        imageBase64: fabricImg || undefined,
+      };
+      onSaveSettings({
+        ...settings,
+        sheerFabricMaterials: [...list, newItem],
+      });
+    }
+
     setFabricBrand("");
     setFabricColorName("");
     setFabricImg("");
@@ -327,6 +525,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       ...settings,
       sheerFabricMaterials: list.filter((x) => x.id !== id),
     });
+    if (editingSheerId === id) setEditingSheerId(null);
   };
 
   // Blinds & Roller operations
@@ -334,47 +533,41 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     e.preventDefault();
     if (!blindName.trim() || !blindColorName.trim()) return;
 
-    if (blindType === "Wood Blinds" || blindType === "Aluminum Blinds") {
-      const list = settings.blindMaterials || [];
-      const newItem: FabricMaterial = {
-        id: generateId(),
-        name: blindName.trim().toUpperCase(),
-        colorName: blindColorName.trim().toUpperCase(),
-        type: blindType,
-        imageBase64: blindImg || undefined,
-      };
-      onSaveSettings({
-        ...settings,
-        blindMaterials: [...list, newItem],
-      });
-    } else if (blindType === "Roller Shades") {
-      const list = settings.rollerMaterials || [];
-      const newItem: FabricMaterial = {
-        id: generateId(),
-        name: blindName.trim().toUpperCase(),
-        colorName: blindColorName.trim().toUpperCase(),
-        type: blindType,
-        imageBase64: blindImg || undefined,
-      };
-      onSaveSettings({
-        ...settings,
-        rollerMaterials: [...list, newItem],
-      });
-    } else if (blindType === "Fabric Tape") {
-      const list = settings.blindTapeMaterials || [];
-      const newItem: FabricMaterial = {
-        id: generateId(),
-        name: blindName.trim().toUpperCase(),
-        colorName: blindColorName.trim().toUpperCase(),
-        type: blindType,
-        imageBase64: blindImg || undefined,
-      };
-      onSaveSettings({
-        ...settings,
-        blindTapeMaterials: [...list, newItem],
-      });
+    let blindMaterials = settings.blindMaterials || [];
+    let rollerMaterials = settings.rollerMaterials || [];
+    let blindTapeMaterials = settings.blindTapeMaterials || [];
+
+    // If editing, first filter out the old item from whichever list it was in
+    if (editingBlindId) {
+      blindMaterials = blindMaterials.filter((x) => x.id !== editingBlindId);
+      rollerMaterials = rollerMaterials.filter((x) => x.id !== editingBlindId);
+      blindTapeMaterials = blindTapeMaterials.filter((x) => x.id !== editingBlindId);
     }
 
+    const newItem: FabricMaterial = {
+      id: editingBlindId || generateId(),
+      name: blindName.trim().toUpperCase(),
+      colorName: blindColorName.trim().toUpperCase(),
+      type: blindType,
+      imageBase64: blindImg || undefined,
+    };
+
+    if (blindType === "Wood Blinds" || blindType === "Aluminum Blinds") {
+      blindMaterials.push(newItem);
+    } else if (blindType === "Roller Shades") {
+      rollerMaterials.push(newItem);
+    } else if (blindType === "Fabric Tape") {
+      blindTapeMaterials.push(newItem);
+    }
+
+    onSaveSettings({
+      ...settings,
+      blindMaterials,
+      rollerMaterials,
+      blindTapeMaterials,
+    });
+
+    setEditingBlindId(null);
     setBlindName("");
     setBlindColorName("");
     setBlindImg("");
@@ -391,6 +584,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const list = settings.blindTapeMaterials || [];
       onSaveSettings({ ...settings, blindTapeMaterials: list.filter((x) => x.id !== id) });
     }
+    if (editingBlindId === id) setEditingBlindId(null);
   };
 
   // Tracks & Accessories CRUD Editor
@@ -414,7 +608,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       } else {
         // Create Mode
         if (updated.some((x) => x.name.toLowerCase() === nameText.trim().toLowerCase())) {
-          alert("มีชื่อนี้ในระบบแล้ว");
+          showToast("มีชื่อนี้ในระบบแล้ว", "error");
           return;
         }
         updated.push({ id: generateId(), name: nameText.trim() });
@@ -522,7 +716,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       } else {
         // Create Mode
         if (updated.some((x) => x.toLowerCase() === trimmed.toLowerCase())) {
-          alert("มีคุณสมบัตินี้ในระบบแล้ว");
+          showToast("มีคุณสมบัตินี้ในระบบแล้ว", "error");
           return;
         }
         updated.push(trimmed);
@@ -621,7 +815,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     label: string;
     description: string;
     items: string[];
-    fieldKey: "hangingTypes" | "usageTypes" | "clearanceOptions";
+    fieldKey: "hangingTypes" | "usageTypes" | "clearanceOptions" | "clearanceTopOptions";
     placeholder?: string;
   }> = ({ label, description, items = [], fieldKey, placeholder }) => {
     const [nameText, setNameText] = useState("");
@@ -637,7 +831,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         setEditingIndex(null);
       } else {
         if (updated.some((x) => x.toLowerCase() === trimmed.toLowerCase())) {
-          alert("มีตัวเลือกนี้ในระบบแล้ว");
+          showToast("มีตัวเลือกนี้ในระบบแล้ว", "error");
           return;
         }
         updated.push(trimmed);
@@ -732,6 +926,107 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div className="space-y-8 animate-fade-in">
+      {/* Upload/Save Progress Modal Overlay */}
+      {isSaving && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[9999] flex flex-col items-center justify-center p-6 text-white">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full shadow-2xl text-center space-y-6">
+            <div className="relative w-24 h-24 mx-auto flex items-center justify-center">
+              {/* Spinner wheel */}
+              <div className="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
+              <div className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+              <span className="text-xl font-black text-indigo-400 font-mono">
+                {saveProgress !== null ? `${saveProgress}%` : "..."}
+              </span>
+            </div>
+            
+            <div className="space-y-2">
+              <h3 className="text-lg font-extrabold text-white">กำลังอัปโหลดข้อมูลผ้าม่าน...</h3>
+              <p className="text-xs text-slate-400">
+                ระบบกำลังทำการบีบอัดและอัปโหลดรูปภาพสวอชผ้าไปยังคลาวด์เซิร์ฟเวอร์ กรุณาอย่าปิดหน้านี้
+              </p>
+            </div>
+
+            {saveProgress !== null && (
+              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                <div 
+                  className="bg-indigo-500 h-full transition-all duration-300"
+                  style={{ width: `${saveProgress}%` }}
+                ></div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Clear List Confirmation Modal Overlay */}
+      {clearTarget && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[9999] flex flex-col items-center justify-center p-4">
+          <div className="bg-white text-slate-800 rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl border border-slate-100 space-y-6 animate-scale-in">
+            <div className="flex items-center gap-3 text-rose-600 bg-rose-50 p-4 rounded-2xl border border-rose-100">
+              <ShieldAlert className="w-8 h-8 shrink-0" />
+              <div>
+                <h3 className="text-base font-black">ยืนยันการล้างข้อมูล!</h3>
+                <p className="text-xs text-rose-700/80 mt-0.5 font-medium">
+                  การดำเนินการนี้จะลบรายการทั้งหมดอย่างถาวรและไม่สามารถย้อนกลับได้
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs text-slate-500 font-bold">
+                รายการที่จะถูกลบ:{" "}
+                <span className="text-rose-600 bg-rose-50 px-2 py-0.5 rounded-lg text-xs font-black">
+                  {clearTarget === "solid" && "ผ้าม่านทึบ (Solid)"}
+                  {clearTarget === "sheer" && "ผ้าม่านโปร่ง (Sheer)"}
+                  {clearTarget === "blind" && "มู่ลี่ (Wood & Aluminum)"}
+                  {clearTarget === "roller" && "ม่านม้วน (Roller Shades)"}
+                </span>
+              </p>
+              <p className="text-xs text-slate-400 font-medium leading-relaxed">
+                เพื่อความปลอดภัย กรุณาพิมพ์คำว่า <span className="text-rose-600 font-black font-mono bg-rose-50 px-1.5 py-0.5 rounded">CONFIRM</span> ในช่องด้านล่างเพื่อดำเนินการต่อ
+              </p>
+            </div>
+
+            <div>
+              <input
+                type="text"
+                autoFocus
+                value={clearConfirmInput}
+                onChange={(e) => setClearConfirmInput(e.target.value)}
+                placeholder="พิมพ์ CONFIRM"
+                className="w-full bg-slate-50 border border-slate-250 text-slate-800 text-center text-sm font-bold font-mono uppercase tracking-wider rounded-xl px-4 py-3 focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none transition"
+              />
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setClearTarget(null);
+                  setClearConfirmInput("");
+                }}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-3 rounded-xl transition cursor-pointer text-center"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={clearConfirmInput.trim() !== "CONFIRM"}
+                onClick={handleClearList}
+                className={`flex-1 text-white text-xs font-bold py-3 rounded-xl transition text-center cursor-pointer flex items-center justify-center gap-1.5 ${
+                  clearConfirmInput.trim() === "CONFIRM"
+                    ? "bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-600/15"
+                    : "bg-slate-300 cursor-not-allowed text-white/70"
+                }`}
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>ยืนยันการล้างข้อมูล</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Intro section */}
       <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-6 md:p-8 text-white shadow-xl shadow-indigo-950/10">
         <h2 className="text-2xl md:text-3xl font-black tracking-tight">
@@ -866,7 +1161,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="lg:col-span-1 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm h-fit">
                   <h3 className="text-base font-bold text-slate-800 mb-1 flex items-center gap-2">
                     <Users className="w-4.5 h-4.5 text-rose-500" />
-                    <span>เพิ่ม/แก้ไขพนักงานเข้าระบบ</span>
+                    <span>{editingEmployeeId ? "แก้ไขพนักงาน" : "เพิ่มพนักงานเข้าระบบ"}</span>
                   </h3>
                   <p className="text-xs text-slate-400 mb-4">กำหนดรหัสผ่าน บทบาท และโควต้าใช้งาน AI รายเดือน</p>
 
@@ -949,9 +1244,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       type="submit"
                       className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-rose-600/10 cursor-pointer"
                     >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>บันทึกเพิ่มพนักงาน</span>
+                      {editingEmployeeId ? <Edit3 className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                      <span>{editingEmployeeId ? "บันทึกการแก้ไขพนักงาน" : "บันทึกเพิ่มพนักงาน"}</span>
                     </button>
+
+                    {editingEmployeeId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingEmployeeId(null);
+                          setNewEmpName("");
+                          setNewEmpUsername("");
+                          setNewEmpPassword("");
+                          setNewEmpRole("designer");
+                          setNewEmpQuota(30);
+                        }}
+                        className="w-full bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-xs rounded-xl py-2.5 transition text-center cursor-pointer"
+                      >
+                        ยกเลิกการแก้ไข
+                      </button>
+                    )}
                   </form>
                 </div>
 
@@ -1002,15 +1314,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           </div>
                         </div>
 
-                        {employees.length > 1 && emp.role !== "admin" && (
+                        <div className="flex items-center gap-1">
                           <button
                             type="button"
-                            onClick={() => onDeleteEmployee(emp.id)}
-                            className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
+                            onClick={() => {
+                              setEditingEmployeeId(emp.id);
+                              setNewEmpName(emp.name);
+                              setNewEmpUsername(emp.username || "");
+                              setNewEmpPassword(emp.password || "");
+                              setNewEmpRole(emp.role || "designer");
+                              setNewEmpQuota(emp.aiQuota || 30);
+                            }}
+                            className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
+                            title="แก้ไขข้อมูลพนักงาน"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Edit3 className="w-4 h-4" />
                           </button>
-                        )}
+
+                          {employees.length > 1 && emp.role !== "admin" && (
+                            <button
+                              type="button"
+                              onClick={() => onDeleteEmployee(emp.id)}
+                              className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
+                              title="ลบพนักงาน"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1026,7 +1357,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="lg:col-span-1 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm h-fit">
               <h3 className="text-base font-bold text-slate-800 mb-1 flex items-center gap-2">
                 <Layers className="w-4.5 h-4.5 text-indigo-500" />
-                <span>เพิ่มรูปแบบการติดตั้งผ้าม่าน</span>
+                <span>{editingStyleId ? "แก้ไขรูปแบบการติดตั้งผ้าม่าน" : "เพิ่มรูปแบบการติดตั้งผ้าม่าน"}</span>
               </h3>
               <p className="text-xs text-slate-400 mb-4">ระบุวิธีกาง แถบแม่เหล็ก หรือโซ่แยกดึงของมู่ลี่ม่านม้วน</p>
 
@@ -1041,8 +1372,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     value={newStyleName}
                     onChange={(e) => setNewStyleName(e.target.value)}
                     placeholder="เช่น ม่านลอน, มู่ลี่ไม้บาสวูด"
-                    className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 focus:ring-2 focus:ring-indigo-500/20 outline-none"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 focus:ring-2 focus:ring-indigo-500/20 outline-none font-bold"
                   />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
+                    คำสั่งรูปแบบม่านภาษาอังกฤษส่งให้ AI (English AI Style Prompt)
+                  </label>
+                  <input
+                    type="text"
+                    value={newStyleEnForAi}
+                    onChange={(e) => setNewStyleEnForAi(e.target.value)}
+                    placeholder="เช่น wave fold curtains, eyelet curtains, wood blinds, roller shades"
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 focus:ring-2 focus:ring-indigo-500/20 outline-none font-bold"
+                  />
+                  <p className="text-[9px] text-slate-400 mt-0.5">ใช้ระบุคำสั่งภาษาอังกฤษเฉพาะสำหรับรูปแบบม่านนี้ เพื่อส่งให้ AI วาดภาพได้แม่นยำ</p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -1114,13 +1459,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 </div>
 
-                <button
-                  type="submit"
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>บันทึกรูปแบบม่าน</span>
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{editingStyleId ? "บันทึกการแก้ไข" : "บันทึกรูปแบบม่าน"}</span>
+                  </button>
+                  {editingStyleId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingStyleId(null);
+                        setNewStyleName("");
+                        setNewStyleCategory("curtain");
+                        setNewStyleOps("รวบซ้าย, รวบขวา, แยกกลาง");
+                        setNewStyleImg("");
+                        setNewStyleEnForAi("");
+                      }}
+                      className="bg-slate-150 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl px-4 py-3 transition cursor-pointer"
+                    >
+                      ยกเลิก
+                    </button>
+                  )}
+                </div>
               </form>
             </div>
 
@@ -1148,17 +1511,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           {item.category || "curtain"}
                         </span>
                       </div>
-                      <p className="text-[10px] font-semibold text-indigo-600 mt-1">
+                      {item.styleEnForAi && (
+                        <p className="text-[10px] font-semibold text-amber-600 mt-1">
+                          คำสั่ง AI (EN): <span className="font-bold underline">{item.styleEnForAi}</span>
+                        </p>
+                      )}
+                      <p className="text-[10px] font-semibold text-indigo-600 mt-0.5">
                         การควบคุม: {item.operationOptions?.join(" / ") || "รวบซ้าย, รวบขวา, แยกกลาง"}
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveStyle(item.id)}
-                      className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingStyleId(item.id);
+                          setNewStyleName(item.name);
+                          setNewStyleCategory(item.category || "curtain");
+                          setNewStyleOps(item.operationOptions?.join(", ") || "รวบซ้าย, รวบขวา, แยกกลาง");
+                          setNewStyleImg(item.imageBase64 || "");
+                          setNewStyleEnForAi(item.styleEnForAi || "");
+                        }}
+                        className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
+                        title="แก้ไขสเปกนี้"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveStyle(item.id)}
+                        className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
+                        title="ลบสเปกนี้"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1172,7 +1558,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="lg:col-span-1 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm h-fit">
               <h3 className="text-base font-bold text-slate-800 mb-1 flex items-center gap-2">
                 <Ruler className="w-4.5 h-4.5 text-indigo-500" />
-                <span>เพิ่มสเปกระยะชายม่าน</span>
+                <span>{editingHemId ? "แก้ไขสเปกระยะชายม่าน" : "เพิ่มสเปกระยะชายม่าน"}</span>
               </h3>
               <p className="text-xs text-slate-400 mb-4">เพิ่มระยะห่างหรือการกองพื้นลอยชายเพื่อดีไซน์ที่หรูหรา</p>
 
@@ -1215,13 +1601,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 </div>
 
-                <button
-                  type="submit"
-                  className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>บันทึกระยะชายม่าน</span>
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="submit"
+                    className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{editingHemId ? "บันทึกการแก้ไข" : "บันทึกระยะชายม่าน"}</span>
+                  </button>
+                  {editingHemId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingHemId(null);
+                        setNewHemName("");
+                        setNewHemImg("");
+                      }}
+                      className="bg-slate-150 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl px-4 py-3 transition cursor-pointer"
+                    >
+                      ยกเลิก
+                    </button>
+                  )}
+                </div>
               </form>
             </div>
 
@@ -1243,13 +1644,28 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       )}
                     </div>
                     <span className="font-bold text-slate-800 text-xs flex-1">{item.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveHem(item.id)}
-                      className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingHemId(item.id);
+                          setNewHemName(item.name);
+                          setNewHemImg(item.imageBase64 || "");
+                        }}
+                        className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
+                        title="แก้ไขระยะนี้"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveHem(item.id)}
+                        className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
+                        title="ลบระยะนี้"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -1264,10 +1680,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div>
                 <h3 className="text-base font-bold text-slate-800 mb-1 flex items-center gap-2">
                   <Palette className="w-4.5 h-4.5 text-indigo-500" />
-                  <span>เพิ่มผ้าม่านทึบ (Solid)</span>
+                  <span>{editingSolidId ? "แก้ไขผ้าม่านทึบ (Solid)" : "เพิ่มผ้าม่านทึบ (Solid)"}</span>
                 </h3>
                 <p className="text-xs text-slate-400 mb-4">กำหนดสเปก ชื่อผ้า และสีผ้า โดยดึงเฉดสีจากรูปภาพจริงเท่านั้น</p>
-
+ 
                 <form onSubmit={handleAddSolidFabric} className="space-y-3.5">
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -1297,7 +1713,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </div>
                   </div>
-
+ 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                       คุณสมบัติการสะท้อน/ควบคุมแสง
@@ -1312,7 +1728,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       ))}
                     </select>
                   </div>
-
+ 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                       รูปภาพจริงสวอชผ้า (Real Photo Swatch ONLY)
@@ -1328,7 +1744,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <input
                         type="file"
                         accept="image/*"
-                        required
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (file) processImage(file, setFabricImg);
@@ -1337,14 +1752,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </div>
                   </div>
-
-                  <button
-                    type="submit"
-                    className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>บันทึกผ้าทึบแสง</span>
-                  </button>
+ 
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>{editingSolidId ? "บันทึกการแก้ไข" : "บันทึกผ้าทึบแสง"}</span>
+                    </button>
+                    {editingSolidId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingSolidId(null);
+                          setFabricBrand("");
+                          setFabricColorName("");
+                          setFabricType("Blackout");
+                          setFabricImg("");
+                        }}
+                        className="bg-slate-150 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl px-4 py-3 transition cursor-pointer"
+                      >
+                        ยกเลิก
+                      </button>
+                    )}
+                  </div>
                 </form>
               </div>
 
@@ -1373,60 +1805,134 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </select>
                 </div>
 
-                <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-slate-50">
-                  <input
-                    type="file"
-                    {...{ webkitdirectory: "", directory: "", multiple: true }}
-                    onChange={(e) => handleFolderUpload(e, "solid")}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <FolderUp className="w-6 h-6 text-slate-400 mx-auto mb-1" />
-                  <span className="text-[10px] font-bold text-indigo-600">กดเลือกโฟลเดอร์ผ้าเพื่อนำเข้าพร้อมกัน</span>
+                <div className="flex gap-2">
+                  <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-indigo-50/30 flex-1">
+                    <input
+                      type="file"
+                      {...{ webkitdirectory: "", directory: "", multiple: true }}
+                      onChange={(e) => handleFolderUpload(e, "solid")}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <FolderUp className="w-5 h-5 text-indigo-500 mx-auto mb-1" />
+                    <span className="text-[10px] font-bold text-slate-600 block">นำเข้าด้วยโฟลเดอร์</span>
+                    <span className="text-[9px] text-slate-400 block">(ดึงชื่อจากโฟลเดอร์)</span>
+                  </div>
+
+                  <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-emerald-50/30 flex-1">
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={(e) => handleFolderUpload(e, "solid")}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <Files className="w-5 h-5 text-emerald-500 mx-auto mb-1" />
+                    <span className="text-[10px] font-bold text-slate-600 block">นำเข้าด้วยไฟล์รูป</span>
+                    <span className="text-[9px] text-slate-400 block">(ดึงชื่อไฟล์ เช่น แบรนด์_สี)</span>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm">
-              <h3 className="text-base font-bold text-slate-800 mb-3">
-                รายการผ้าม่านทึบแสง ({(settings.solidFabricMaterials || []).length} สีแบบ)
-              </h3>
-              <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-                {(settings.solidFabricMaterials || []).map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center gap-3.5 p-3 bg-slate-50 border border-slate-150 rounded-2xl hover:border-slate-250 transition"
-                  >
-                    <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
-                      {item.imageBase64 ? (
-                        <img src={item.imageBase64} alt={item.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full bg-slate-100 flex items-center justify-center text-[10px] text-slate-400">
-                          No Swatch
-                        </div>
+            {(() => {
+              const filteredSolidFabrics = (settings.solidFabricMaterials || []).filter((item) => {
+                const q = solidSearch.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  (item.name || "").toLowerCase().includes(q) ||
+                  (item.colorName || "").toLowerCase().includes(q) ||
+                  (item.type || "").toLowerCase().includes(q)
+                );
+              });
+
+              return (
+                <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex flex-col h-full">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4 shrink-0">
+                    <div className="flex items-center gap-3">
+                      <h3 className="text-base font-bold text-slate-800">
+                        รายการผ้าม่านทึบแสง ({filteredSolidFabrics.length} / {(settings.solidFabricMaterials || []).length} สีแบบ)
+                      </h3>
+                      {(settings.solidFabricMaterials || []).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setClearTarget("solid");
+                            setClearConfirmInput("");
+                          }}
+                          className="text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>ล้างข้อมูล</span>
+                        </button>
                       )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-extrabold text-slate-800 text-xs">
-                          {item.name}
-                        </span>
-                        <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tight bg-slate-200/80 text-slate-700">
-                          {item.type}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-indigo-600 font-bold mt-0.5">สีผ้า: {item.colorName}</p>
+                    <div className="relative w-full md:w-64">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={solidSearch}
+                        onChange={(e) => setSolidSearch(e.target.value)}
+                        placeholder="ค้นหาชื่อผ้า, สี หรือประเภท..."
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl pl-9 pr-4 py-2 focus:ring-2 focus:ring-indigo-500/20 outline-none transition"
+                      />
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveSolidFabric(item.id)}
-                      className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
                   </div>
-                ))}
-              </div>
-            </div>
+                  <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+                    {filteredSolidFabrics.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center gap-3.5 p-3 bg-slate-50 border border-slate-150 rounded-2xl hover:border-slate-250 transition"
+                      >
+                        <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
+                          {item.imageBase64 ? (
+                            <img src={item.imageBase64} alt={item.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full bg-slate-100 flex items-center justify-center text-[10px] text-slate-400">
+                              No Swatch
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-extrabold text-slate-800 text-xs">
+                              {item.name}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tight bg-slate-200/80 text-slate-700">
+                              {item.type}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-indigo-600 font-bold mt-0.5">สีผ้า: {item.colorName}</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingSolidId(item.id);
+                              setFabricBrand(item.name);
+                              setFabricColorName(item.colorName);
+                              setFabricType(item.type);
+                              setFabricImg(item.imageBase64 || "");
+                            }}
+                            className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
+                            title="แก้ไขสีแบบนี้"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSolidFabric(item.id)}
+                            className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
+                            title="ลบสีแบบนี้"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
 
@@ -1437,10 +1943,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div>
                 <h3 className="text-base font-bold text-slate-800 mb-1 flex items-center gap-2">
                   <Eye className="w-4.5 h-4.5 text-indigo-500" />
-                  <span>เพิ่มผ้าโปร่งแสง (Sheer)</span>
+                  <span>{editingSheerId ? "แก้ไขผ้าโปร่งแสง (Sheer)" : "เพิ่มผ้าโปร่งแสง (Sheer)"}</span>
                 </h3>
                 <p className="text-xs text-slate-400 mb-4">กำหนดสเปกแบรนด์ ชื่อผ้าและสีผ้า โดยดึงเฉดสีจากรูปภาพจริงเท่านั้น</p>
-
+ 
                 <form onSubmit={handleAddSheerFabric} className="space-y-3.5">
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -1470,7 +1976,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </div>
                   </div>
-
+ 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                       รูปภาพจริงสวอชผ้าโปร่ง (Real Photo Swatch ONLY)
@@ -1486,7 +1992,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <input
                         type="file"
                         accept="image/*"
-                        required
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (file) processImage(file, setFabricImg);
@@ -1495,14 +2000,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </div>
                   </div>
-
-                  <button
-                    type="submit"
-                    className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>บันทึกผ้าม่านโปร่งแสง</span>
-                  </button>
+ 
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>{editingSheerId ? "บันทึกการแก้ไข" : "บันทึกผ้าม่านโปร่งแสง"}</span>
+                    </button>
+                    {editingSheerId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingSheerId(null);
+                          setFabricBrand("");
+                          setFabricColorName("");
+                          setFabricImg("");
+                        }}
+                        className="bg-slate-150 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl px-4 py-3 transition cursor-pointer"
+                      >
+                        ยกเลิก
+                      </button>
+                    )}
+                  </div>
                 </form>
               </div>
 
@@ -1515,60 +2036,133 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <p className="text-[10px] text-slate-400 mb-3 leading-relaxed">
                   เลือกโฟลเดอร์ผ้าโปร่งจากเครื่องคอมพิวเตอร์ ระบบจะใช้ <strong>ชื่อโฟลเดอร์เป็นชื่อผ้า</strong> และ <strong>ชื่อไฟล์เป็นสีผ้าโปร่ง</strong>
                 </p>
-                <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-slate-50">
-                  <input
-                    type="file"
-                    {...{ webkitdirectory: "", directory: "", multiple: true }}
-                    onChange={(e) => handleFolderUpload(e, "sheer")}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <FolderUp className="w-6 h-6 text-slate-400 mx-auto mb-1" />
-                  <span className="text-[10px] font-bold text-indigo-600">กดเลือกโฟลเดอร์ผ้าโปร่งเพื่อนำเข้าพร้อมกัน</span>
+                <div className="flex gap-2">
+                  <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-indigo-50/30 flex-1">
+                    <input
+                      type="file"
+                      {...{ webkitdirectory: "", directory: "", multiple: true }}
+                      onChange={(e) => handleFolderUpload(e, "sheer")}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <FolderUp className="w-5 h-5 text-indigo-500 mx-auto mb-1" />
+                    <span className="text-[10px] font-bold text-slate-600 block">นำเข้าด้วยโฟลเดอร์</span>
+                    <span className="text-[9px] text-slate-400 block">(ดึงชื่อจากโฟลเดอร์)</span>
+                  </div>
+
+                  <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-emerald-50/30 flex-1">
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={(e) => handleFolderUpload(e, "sheer")}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <Files className="w-5 h-5 text-emerald-500 mx-auto mb-1" />
+                    <span className="text-[10px] font-bold text-slate-600 block">นำเข้าด้วยไฟล์รูป</span>
+                    <span className="text-[9px] text-slate-400 block">(ดึงชื่อไฟล์ เช่น แบรนด์_สี)</span>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm">
-              <h3 className="text-base font-bold text-slate-800 mb-3">
-                รายการผ้าม่านโปร่งแสง ({(settings.sheerFabricMaterials || []).length} สีแบบ)
-              </h3>
-              <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-                {(settings.sheerFabricMaterials || []).map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center gap-3.5 p-3 bg-slate-50 border border-slate-150 rounded-2xl hover:border-slate-250 transition"
-                  >
-                    <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
-                      {item.imageBase64 ? (
-                        <img src={item.imageBase64} alt={item.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full bg-slate-100 flex items-center justify-center text-[10px] text-slate-400">
-                          No Swatch
-                        </div>
+            {(() => {
+              const filteredSheerFabrics = (settings.sheerFabricMaterials || []).filter((item) => {
+                const q = sheerSearch.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  (item.name || "").toLowerCase().includes(q) ||
+                  (item.colorName || "").toLowerCase().includes(q) ||
+                  (item.type || "").toLowerCase().includes(q)
+                );
+              });
+
+              return (
+                <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex flex-col h-full">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4 shrink-0">
+                    <div className="flex items-center gap-3">
+                      <h3 className="text-base font-bold text-slate-800">
+                        รายการผ้าม่านโปร่งแสง ({filteredSheerFabrics.length} / {(settings.sheerFabricMaterials || []).length} สีแบบ)
+                      </h3>
+                      {(settings.sheerFabricMaterials || []).length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setClearTarget("sheer");
+                            setClearConfirmInput("");
+                          }}
+                          className="text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1 transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>ล้างข้อมูล</span>
+                        </button>
                       )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-extrabold text-slate-800 text-xs">
-                          {item.name}
-                        </span>
-                        <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tight bg-slate-200/80 text-slate-700">
-                          {item.type}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-indigo-600 font-bold mt-0.5">สีผ้า: {item.colorName}</p>
+                    <div className="relative w-full md:w-64">
+                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={sheerSearch}
+                        onChange={(e) => setSheerSearch(e.target.value)}
+                        placeholder="ค้นหาชื่อผ้า, สี หรือประเภท..."
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl pl-9 pr-4 py-2 focus:ring-2 focus:ring-indigo-500/20 outline-none transition"
+                      />
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveSheerFabric(item.id)}
-                      className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
                   </div>
-                ))}
-              </div>
-            </div>
+                  <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+                    {filteredSheerFabrics.map((item) => (
+                      <div
+                        key={item.id}
+                        className="flex items-center gap-3.5 p-3 bg-slate-50 border border-slate-150 rounded-2xl hover:border-slate-250 transition"
+                      >
+                        <div className="w-12 h-12 rounded-xl bg-white border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
+                          {item.imageBase64 ? (
+                            <img src={item.imageBase64} alt={item.name} className="w-full h-full object-cover" />
+                          ) : (
+                            <div className="w-full h-full bg-slate-100 flex items-center justify-center text-[10px] text-slate-400">
+                              No Swatch
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-extrabold text-slate-800 text-xs">
+                              {item.name}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tight bg-slate-200/80 text-slate-700">
+                              {item.type}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-indigo-600 font-bold mt-0.5">สีผ้า: {item.colorName}</p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingSheerId(item.id);
+                              setFabricBrand(item.name);
+                              setFabricColorName(item.colorName);
+                              setFabricImg(item.imageBase64 || "");
+                            }}
+                            className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
+                            title="แก้ไขสีแบบนี้"
+                          >
+                            <Edit3 className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSheerFabric(item.id)}
+                            className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 p-2 rounded-xl transition cursor-pointer"
+                            title="ลบสีแบบนี้"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
 
@@ -1579,10 +2173,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div>
                 <h3 className="text-base font-bold text-slate-800 mb-1 flex items-center gap-2">
                   <Sliders className="w-4.5 h-4.5 text-indigo-500" />
-                  <span>เพิ่มวัสดุมู่ลี่ & ม่านม้วน</span>
+                  <span>{editingBlindId ? "แก้ไขวัสดุมู่ลี่ & ม่านม้วน" : "เพิ่มวัสดุมู่ลี่ & ม่านม้วน"}</span>
                 </h3>
                 <p className="text-xs text-slate-400 mb-4">กำหนดสเปกสำหรับมู่ลี่อลูมิเนียม มู่ลี่ไม้ เทปผ้า และม่านม้วน</p>
-
+ 
                 <form onSubmit={handleAddBlindMaterial} className="space-y-3.5">
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -1612,7 +2206,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </div>
                   </div>
-
+ 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                       ประเภทสินค้าเฉพาะกลุ่ม
@@ -1628,7 +2222,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <option value="Fabric Tape">เทปผ้าสำหรับมู่ลี่ (Fabric Tape for Blinds)</option>
                     </select>
                   </div>
-
+ 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                       รูปภาพจริงเนื้อวัสดุสวอช (Real Photo Swatch ONLY)
@@ -1644,7 +2238,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <input
                         type="file"
                         accept="image/*"
-                        required
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           if (file) processImage(file, setBlindImg);
@@ -1653,41 +2246,88 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </div>
                   </div>
-
-                  <button
-                    type="submit"
-                    className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                    <span>บันทึกฐานข้อมูลมู่ลี่/ม่านม้วน</span>
-                  </button>
+ 
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl py-3 transition flex items-center justify-center gap-1.5 shadow-lg shadow-indigo-600/10 cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>{editingBlindId ? "บันทึกการแก้ไข" : "บันทึกฐานข้อมูลมู่ลี่/ม่านม้วน"}</span>
+                    </button>
+                    {editingBlindId && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingBlindId(null);
+                          setBlindName("");
+                          setBlindColorName("");
+                          setBlindImg("");
+                        }}
+                        className="bg-slate-150 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl px-4 py-3 transition cursor-pointer"
+                      >
+                        ยกเลิก
+                      </button>
+                    )}
+                  </div>
                 </form>
               </div>
-
+ 
               {/* Directory import for blinds */}
               <div className="border-t border-slate-100 pt-5">
                 <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mb-2">
                   <FolderUp className="w-4 h-4 text-indigo-500" />
                   <span>นำเข้าสวอชมู่ลี่เป็นโฟลเดอร์ (Bulk Folder Import)</span>
                 </h4>
-                <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-slate-50">
-                  <input
-                    type="file"
-                    {...{ webkitdirectory: "", directory: "", multiple: true }}
-                    onChange={(e) => handleFolderUpload(e, "blinds")}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                  />
-                  <FolderUp className="w-6 h-6 text-slate-400 mx-auto mb-1" />
-                  <span className="text-[10px] font-bold text-indigo-600">กดเลือกโฟลเดอร์นำเข้าสวอชมู่ลี่/ม่านม้วน</span>
+                <div className="flex gap-2">
+                  <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-indigo-50/30 flex-1">
+                    <input
+                      type="file"
+                      {...{ webkitdirectory: "", directory: "", multiple: true }}
+                      onChange={(e) => handleFolderUpload(e, "blinds")}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <FolderUp className="w-5 h-5 text-indigo-500 mx-auto mb-1" />
+                    <span className="text-[10px] font-bold text-slate-600 block">นำเข้าด้วยโฟลเดอร์</span>
+                    <span className="text-[9px] text-slate-400 block">(ดึงชื่อจากโฟลเดอร์)</span>
+                  </div>
+
+                  <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-emerald-50/30 flex-1">
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={(e) => handleFolderUpload(e, "blinds")}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <Files className="w-5 h-5 text-emerald-500 mx-auto mb-1" />
+                    <span className="text-[10px] font-bold text-slate-600 block">นำเข้าด้วยไฟล์รูป</span>
+                    <span className="text-[9px] text-slate-400 block">(ดึงชื่อไฟล์ เช่น แบรนด์_สี)</span>
+                  </div>
                 </div>
               </div>
             </div>
-
+ 
             <div className="lg:col-span-2 space-y-8 max-h-[650px] overflow-y-auto pr-1">
               {/* Wood & Aluminum Blinds List */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm">
                 <h4 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider mb-3 flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span>มู่ลี่ไม้และมู่ลี่อะลูมิเนียม ({(settings.blindMaterials || []).length} รายการ)</span>
+                  <div className="flex items-center gap-2">
+                    <span>มู่ลี่ไม้และมู่ลี่อะลูมิเนียม ({(settings.blindMaterials || []).length} รายการ)</span>
+                    {(settings.blindMaterials || []).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setClearTarget("blind");
+                          setClearConfirmInput("");
+                        }}
+                        className="text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>ล้างข้อมูล</span>
+                      </button>
+                    )}
+                  </div>
                   <span className="text-[10px] font-bold text-slate-400">WOOD & ALUMINUM BLINDS</span>
                 </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1698,26 +2338,58 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           {item.imageBase64 && <img src={item.imageBase64} alt="" className="w-full h-full object-cover" />}
                         </div>
                         <div>
-                          <p className="font-bold text-slate-800 truncate max-w-[130px]">{item.name}</p>
+                          <p className="font-bold text-slate-800 truncate max-w-[110px]">{item.name}</p>
                           <p className="text-[10px] text-indigo-600 font-bold mt-0.5">{item.colorName}</p>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveBlindMaterial(item.id, "blind")}
-                        className="text-slate-400 hover:text-rose-500 p-1.5 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingBlindId(item.id);
+                            setBlindName(item.name);
+                            setBlindColorName(item.colorName);
+                            setBlindType(item.type || "Wood Blinds");
+                            setBlindImg(item.imageBase64 || "");
+                          }}
+                          className="text-slate-400 hover:text-indigo-600 p-1 rounded transition cursor-pointer"
+                          title="แก้ไขวัสดุนี้"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveBlindMaterial(item.id, "blind")}
+                          className="text-slate-400 hover:text-rose-500 p-1 cursor-pointer"
+                          title="ลบวัสดุนี้"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
-
+ 
               {/* Roller Shades List */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm">
                 <h4 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider mb-3 flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span>ม่านม้วน ({(settings.rollerMaterials || []).length} รายการ)</span>
+                  <div className="flex items-center gap-2">
+                    <span>ม่านม้วน ({(settings.rollerMaterials || []).length} รายการ)</span>
+                    {(settings.rollerMaterials || []).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setClearTarget("roller");
+                          setClearConfirmInput("");
+                        }}
+                        className="text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>ล้างข้อมูล</span>
+                      </button>
+                    )}
+                  </div>
                   <span className="text-[10px] font-bold text-slate-400">ROLLER SHADES</span>
                 </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1728,22 +2400,39 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           {item.imageBase64 && <img src={item.imageBase64} alt="" className="w-full h-full object-cover" />}
                         </div>
                         <div>
-                          <p className="font-bold text-slate-800 truncate max-w-[130px]">{item.name}</p>
+                          <p className="font-bold text-slate-800 truncate max-w-[110px]">{item.name}</p>
                           <p className="text-[10px] text-indigo-600 font-bold mt-0.5">{item.colorName}</p>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveBlindMaterial(item.id, "roller")}
-                        className="text-slate-400 hover:text-rose-500 p-1.5 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingBlindId(item.id);
+                            setBlindName(item.name);
+                            setBlindColorName(item.colorName);
+                            setBlindType(item.type || "Roller Shades");
+                            setBlindImg(item.imageBase64 || "");
+                          }}
+                          className="text-slate-400 hover:text-indigo-600 p-1 rounded transition cursor-pointer"
+                          title="แก้ไขวัสดุนี้"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveBlindMaterial(item.id, "roller")}
+                          className="text-slate-400 hover:text-rose-500 p-1 cursor-pointer"
+                          title="ลบวัสดุนี้"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
-
+ 
               {/* Blinds Fabric Tape Ribbon List */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm">
                 <h4 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider mb-3 flex items-center justify-between border-b border-slate-100 pb-2">
@@ -1758,17 +2447,34 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           {item.imageBase64 && <img src={item.imageBase64} alt="" className="w-full h-full object-cover" />}
                         </div>
                         <div>
-                          <p className="font-bold text-slate-800 truncate max-w-[130px]">{item.name}</p>
+                          <p className="font-bold text-slate-800 truncate max-w-[110px]">{item.name}</p>
                           <p className="text-[10px] text-indigo-600 font-bold mt-0.5">{item.colorName}</p>
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveBlindMaterial(item.id, "tape")}
-                        className="text-slate-400 hover:text-rose-500 p-1.5 cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingBlindId(item.id);
+                            setBlindName(item.name);
+                            setBlindColorName(item.colorName);
+                            setBlindType(item.type || "Fabric Tape");
+                            setBlindImg(item.imageBase64 || "");
+                          }}
+                          className="text-slate-400 hover:text-indigo-600 p-1 rounded transition cursor-pointer"
+                          title="แก้ไขวัสดุนี้"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveBlindMaterial(item.id, "tape")}
+                          className="text-slate-400 hover:text-rose-500 p-1 cursor-pointer"
+                          title="ลบวัสดุนี้"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1827,7 +2533,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     type="button"
                     onClick={() => {
                       onSaveSettings({ ...settings, customGeminiApiKey: customApiKey.trim() || undefined });
-                      alert("บันทึกคีย์ Gemini ส่วนตัวเรียบร้อยแล้ว! ระบบจะเริ่มใช้งานคีย์นี้ทันที");
+                      showToast("บันทึกคีย์ Gemini ส่วนตัวเรียบร้อยแล้ว! ระบบจะเริ่มใช้งานคีย์นี้ทันที", "success");
                     }}
                     className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap"
                   >
@@ -1839,7 +2545,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       onClick={() => {
                         setCustomApiKey("");
                         onSaveSettings({ ...settings, customGeminiApiKey: undefined });
-                        alert("ลบคีย์ส่วนตัวแล้ว ระบบจะกลับไปใช้คีย์กลางฟรีของระบบ");
+                        showToast("ลบคีย์ส่วนตัวแล้ว ระบบจะกลับไปใช้คีย์กลางฟรีของระบบ", "info");
                       }}
                       className="bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold px-3 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap"
                     >
@@ -1850,10 +2556,159 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             </div>
 
+            {/* Default Clearance Spacing Card */}
+            <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+              <div className="space-y-1">
+                <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                  <Ruler className="w-4 h-4 text-indigo-600" />
+                  ค่าเริ่มต้นระยะรอบวงกบม่าน (Default Window Frame Clearance Spacing)
+                </h3>
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  กำหนดค่าตั้งต้นสำหรับการเผื่อระยะขอบวงกบ ซ้าย, ขวา และ ด้านบน เมื่อเพิ่มจุดติดตั้งใหม่ในระบบ (ส่วนระยะด้านล่างจะยึดตามระยะชายม่านที่เลือกโดยอัตโนมัติ)
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5">
+                <div>
+                  <label className="block text-[11px] font-black text-slate-500 uppercase tracking-wider mb-1.5">
+                    ระยะเผื่อด้านซ้ายเริ่มต้น
+                  </label>
+                  <select
+                    value={settings.defaultDistanceLeft || "พอดีเฟรม"}
+                    onChange={(e) => {
+                      onSaveSettings({ ...settings, defaultDistanceLeft: e.target.value });
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer font-bold"
+                  >
+                    {(settings.clearanceOptions || []).map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-black text-slate-500 uppercase tracking-wider mb-1.5">
+                    ระยะเผื่อด้านขวาเริ่มต้น
+                  </label>
+                  <select
+                    value={settings.defaultDistanceRight || "พอดีเฟรม"}
+                    onChange={(e) => {
+                      onSaveSettings({ ...settings, defaultDistanceRight: e.target.value });
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer font-bold"
+                  >
+                    {(settings.clearanceOptions || []).map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-black text-slate-500 uppercase tracking-wider mb-1.5">
+                    ระยะเผื่อด้านบนเริ่มต้น
+                  </label>
+                  <select
+                    value={settings.defaultDistanceTop || "ติดเพดาน"}
+                    onChange={(e) => {
+                      onSaveSettings({ ...settings, defaultDistanceTop: e.target.value });
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer font-bold"
+                  >
+                    {((settings.clearanceTopOptions && settings.clearanceTopOptions.length > 0)
+                      ? settings.clearanceTopOptions
+                      : (settings.clearanceOptions || [])
+                    ).map((opt) => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Logo Upload Section */}
+            <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="space-y-1 max-w-2xl">
+                  <h3 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                    <FileImage className="w-4 h-4 text-indigo-600" />
+                    โลโก้บริษัทสำหรับเอกสารเสนอราคา PDF (Company Logo for PDF Proposal)
+                  </h3>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    อัปโหลดรูปภาพโลโก้ของบริษัทเพื่อเปลี่ยนแทนที่โลโก้มาตรฐาน PASAYA บนเอกสารนำเสนอและสรุปงานแบบ PDF
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-4 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-600 whitespace-nowrap">ขนาดโลโก้:</span>
+                    <select
+                      value={settings.companyLogoSize || "L"}
+                      onChange={(e) => {
+                        onSaveSettings({ ...settings, companyLogoSize: e.target.value as "S" | "M" | "L" | "XL" });
+                      }}
+                      className="bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-2 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
+                    >
+                      <option value="S">S (ขนาดเล็ก)</option>
+                      <option value="M">M (ขนาดกลาง)</option>
+                      <option value="L">L (ขนาดใหญ่ - เริ่มต้น)</option>
+                      <option value="XL">XL (ขนาดใหญ่พิเศษ)</option>
+                    </select>
+                  </div>
+
+                  <input
+                    type="file"
+                    id="company-logo-upload"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        processImage(file, (base64) => {
+                          onSaveSettings({ ...settings, companyLogoBase64: base64 });
+                          showToast("อัปโหลดและบันทึกโลโก้บริษัทเรียบร้อยแล้ว!", "success");
+                        });
+                      }
+                    }}
+                  />
+                  <div className="flex gap-2">
+                    <label
+                      htmlFor="company-logo-upload"
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5"
+                    >
+                      <FolderUp className="w-4 h-4" />
+                      อัปโหลดโลโก้
+                    </label>
+                    {settings.companyLogoBase64 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSaveSettings({ ...settings, companyLogoBase64: undefined });
+                          showToast("คืนค่าโลโก้เป็นแบบเริ่มต้นเรียบร้อยแล้ว!", "info");
+                        }}
+                        className="bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold px-4 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap"
+                      >
+                        คืนค่าเริ่มต้น
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {settings.companyLogoBase64 && (
+                <div className="mt-4 p-4 bg-slate-50 border border-slate-200/80 rounded-2xl max-w-xs flex flex-col items-center gap-2">
+                  <span className="text-[10px] uppercase font-bold text-slate-400">ตัวอย่างโลโก้ปัจจุบัน</span>
+                  <img
+                    src={settings.companyLogoBase64}
+                    alt="Current Logo"
+                    className="max-h-[60px] max-w-full object-contain"
+                  />
+                </div>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <CustomMaterialCRUD
                 label="ฐานข้อมูลรางม่านติดตั้ง (Hanging Tracks Database)"
-                description="จัดการ ลบ เพิ่ม หรือแก้ไขข้อมูลชื่อรางติดตั้งเพื่อไปแสดงในระบบดรอปดาวน์ใบเสนอราคา"
+                description="จัดการ ลบ เพิ่ม หรือแก้ไขข้อมูลชื่อรางติดตั้งเพื่อไปแสดงในระบบดรอปดาวน์ใบสรุปการติดตั้งผ้าม่าน"
                 items={settings.trackMaterials || []}
                 fieldKey="trackMaterials"
               />
@@ -1882,11 +2737,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 placeholder="เช่น การรวบเก็บแบบใหม่..."
               />
               <StringListCRUD
-                label="ระยะรอบวงกบม่าน (Clearance Spacing Offsets)"
-                description="ระยะผ้าม่านเลยกรอบวงกบหน้าต่างด้านซ้าย ขวา บน ล่าง เช่น พอดีเฟรม, เลยเฟรม 10 ซม., เลยเฟรม 15 ซม., ติดเพดาน"
+                label="ระยะรอบวงกบม่าน ด้านซ้าย-ขวา (Left/Right Spacing Offsets)"
+                description="ระยะผ้าม่านเลยกรอบวงกบหน้าต่างด้านซ้ายและด้านขวา เช่น พอดีเฟรม, เลยเฟรม 10 ซม., เลยเฟรม 15 ซม., เลยเฟรม 20 ซม."
                 items={settings.clearanceOptions || []}
                 fieldKey="clearanceOptions"
                 placeholder="เช่น เลยเฟรม 30 ซม...."
+              />
+              <StringListCRUD
+                label="ระยะรอบวงกบม่าน ด้านบน (Top Spacing Offsets)"
+                description="ระยะผ้าม่านเลยกรอบวงกบหน้าต่างด้านบน เช่น เลยเฟรม 10 ซม., เลยเฟรม 15 ซม., เลยเฟรม 20 ซม., ติดเพดาน"
+                items={settings.clearanceTopOptions || []}
+                fieldKey="clearanceTopOptions"
+                placeholder="เช่น ติดเพดาน..."
               />
             </div>
           </div>
@@ -1903,6 +2765,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           โดยไม่สิ้นเปลืองพื้นที่ดิสก์ขอบคุณการบีบอัดภาพสวอชคุณภาพสูงแบบจัดเรียง
         </div>
       </div>
+      {toast && (
+        <div className={`fixed bottom-6 right-6 z-[9999] flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-2xl border text-xs font-bold transition-all duration-300 transform translate-y-0 scale-100 ${
+          toast.type === "success" 
+            ? "bg-emerald-50 text-emerald-800 border-emerald-100/80" 
+            : toast.type === "error"
+            ? "bg-rose-50 text-rose-800 border-rose-100/80"
+            : "bg-slate-50 text-slate-800 border-slate-100/80"
+        }`}>
+          {toast.type === "success" ? (
+            <BadgeCheck className="w-5 h-5 text-emerald-600 shrink-0" />
+          ) : toast.type === "error" ? (
+            <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />
+          ) : (
+            <Info className="w-5 h-5 text-indigo-600 shrink-0" />
+          )}
+          <span className="flex-1">{toast.message}</span>
+          <button 
+            type="button" 
+            onClick={() => setToast(null)} 
+            className="text-slate-400 hover:text-slate-600 ml-2 animate-pulse"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

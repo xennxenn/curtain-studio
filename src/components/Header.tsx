@@ -1,5 +1,5 @@
 import React from "react";
-import { Layout, Users, Sparkles, UserCheck } from "lucide-react";
+import { Layout, Users, Sparkles, UserCheck, LogOut } from "lucide-react";
 import { Employee } from "../types";
 
 interface HeaderProps {
@@ -8,6 +8,8 @@ interface HeaderProps {
   onActiveEmployeeChange: (id: string) => void;
   activeTab: string;
   setActiveTab: (tab: string) => void;
+  currentUser: Employee | null;
+  onLogout: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -16,8 +18,11 @@ export const Header: React.FC<HeaderProps> = ({
   onActiveEmployeeChange,
   activeTab,
   setActiveTab,
+  currentUser,
+  onLogout,
 }) => {
   const activeEmployee = employees.find((e) => e.id === activeEmployeeId);
+  const isAdmin = currentUser?.role === "admin";
 
   return (
     <header className="bg-slate-900 text-white shadow-xl sticky top-0 z-50">
@@ -38,7 +43,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Employee & Quota Selector */}
+          {/* Employee & Quota Selector & Logout */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="bg-slate-800 border border-slate-700/60 rounded-xl px-3 py-2 flex items-center space-x-3">
               <div className="bg-indigo-500/10 p-1 rounded-lg">
@@ -46,19 +51,25 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
               <div className="flex flex-col">
                 <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                  พนักงานผู้รับผิดชอบ (Designer)
+                  พนักงานผู้ใช้งาน (Designer)
                 </span>
-                <select
-                  value={activeEmployeeId}
-                  onChange={(e) => onActiveEmployeeChange(e.target.value)}
-                  className="bg-transparent border-none text-sm font-semibold text-white focus:outline-none focus:ring-0 p-0 pr-6 cursor-pointer"
-                >
-                  {employees.map((emp) => (
-                    <option key={emp.id} value={emp.id} className="bg-slate-800 text-white">
-                      {emp.name}
-                    </option>
-                  ))}
-                </select>
+                {isAdmin ? (
+                  <select
+                    value={activeEmployeeId}
+                    onChange={(e) => onActiveEmployeeChange(e.target.value)}
+                    className="bg-transparent border-none text-sm font-semibold text-white focus:outline-none focus:ring-0 p-0 pr-6 cursor-pointer"
+                  >
+                    {employees.map((emp) => (
+                      <option key={emp.id} value={emp.id} className="bg-slate-800 text-white">
+                        {emp.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="text-sm font-semibold text-white mt-0.5">
+                    {currentUser?.name || activeEmployee?.name || "ไม่ทราบชื่อ"}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -90,6 +101,16 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Logout button */}
+            <button
+              onClick={onLogout}
+              className="bg-slate-800 hover:bg-rose-950 hover:text-rose-200 border border-slate-700/60 rounded-xl px-3 py-2.5 flex items-center gap-1.5 transition text-xs font-bold cursor-pointer"
+              title="ออกจากระบบ"
+            >
+              <LogOut className="w-4 h-4 text-rose-400" />
+              <span className="hidden sm:inline">ออกจากระบบ</span>
+            </button>
           </div>
         </div>
       </div>
@@ -119,20 +140,22 @@ export const Header: React.FC<HeaderProps> = ({
               }`}
             >
               <Sparkles className="w-4 h-4" />
-              <span>สร้างใบเสนอราคาใหม่</span>
+              <span>สร้างใบสรุปการติดตั้งผ้าม่านใหม่</span>
             </button>
 
-            <button
-              onClick={() => setActiveTab("settings")}
-              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-all flex items-center gap-2 ${
-                activeTab === "settings"
-                  ? "border-indigo-500 text-indigo-400"
-                  : "border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700"
-              }`}
-            >
-              <Users className="w-4 h-4" />
-              <span>ตั้งค่าระบบและสเปกผ้า</span>
-            </button>
+            {isAdmin && (
+              <button
+                onClick={() => setActiveTab("settings")}
+                className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-all flex items-center gap-2 ${
+                  activeTab === "settings"
+                    ? "border-indigo-500 text-indigo-400"
+                    : "border-transparent text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                }`}
+              >
+                <Users className="w-4 h-4" />
+                <span>ตั้งค่าระบบและสเปกผ้า</span>
+              </button>
+            )}
           </nav>
         </div>
       </div>

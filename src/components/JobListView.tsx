@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Search, Calendar, Phone, MapPin, Eye, FileDown, Trash2, FolderOpen, AlertCircle } from "lucide-react";
+import { Search, Calendar, Phone, MapPin, Eye, FileDown, Trash2, FolderOpen, AlertCircle, FileText } from "lucide-react";
 import { Job, WindowItem, Employee } from "../types";
 
 interface JobListViewProps {
@@ -9,6 +9,7 @@ interface JobListViewProps {
   onEditJob: (job: Job) => void;
   onDeleteJob: (id: string) => void;
   onExportPDF: (job: Job) => void;
+  onPreviewPDF: (job: Job) => void;
   isExporting: boolean;
 }
 
@@ -19,6 +20,7 @@ export const JobListView: React.FC<JobListViewProps> = ({
   onEditJob,
   onDeleteJob,
   onExportPDF,
+  onPreviewPDF,
   isExporting,
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
@@ -45,7 +47,7 @@ export const JobListView: React.FC<JobListViewProps> = ({
         </div>
         <h3 className="text-lg font-bold text-slate-800">ยังไม่มีโครงการติดตั้ง</h3>
         <p className="text-slate-400 text-sm mt-1 max-w-sm mx-auto">
-          เริ่มต้นสร้างใบเสนอราคาและการติดตั้งจำลองผ้าม่านด้วย AI แผงแรกของคุณตอนนี้
+          เริ่มต้นสร้างใบสรุปการติดตั้งผ้าม่านและจำลองผ้าม่านด้วย AI รายการแรกของคุณตอนนี้
         </p>
       </div>
     );
@@ -119,35 +121,47 @@ export const JobListView: React.FC<JobListViewProps> = ({
                 </div>
 
                 {/* Footer buttons */}
-                <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center gap-2">
-                  <button
-                    onClick={() => onEditJob(job)}
-                    className="flex-1 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold text-xs py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Eye className="w-4 h-4" />
-                    <span>แก้ไข / ดูงาน</span>
-                  </button>
+                <div className="p-4 bg-slate-50 border-t border-slate-100 flex flex-col gap-2">
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onEditJob(job)}
+                      className="flex-1 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-bold text-xs py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <Eye className="w-4 h-4" />
+                      <span>แก้ไข / ดูงาน</span>
+                    </button>
 
-                  <button
-                    onClick={() => onExportPDF(job)}
-                    disabled={isExporting}
-                    className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 shadow-md shadow-indigo-600/10 disabled:opacity-50 cursor-pointer"
-                  >
-                    <FileDown className="w-4 h-4" />
-                    <span>Export PDF</span>
-                  </button>
+                    <button
+                      onClick={() => {
+                        if (confirm("คุณแน่ใจหรือไม่ว่าต้องการลบงานติดตั้งของลูกค้ารายนี้?")) {
+                          onDeleteJob(job.id);
+                        }
+                      }}
+                      className="p-2.5 hover:bg-rose-50 border border-transparent hover:border-rose-100 rounded-xl text-slate-400 hover:text-rose-600 transition-all cursor-pointer shrink-0"
+                      title="ลบโครงการ"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
 
-                  <button
-                    onClick={() => {
-                      if (confirm("คุณแน่ใจหรือไม่ว่าต้องการลบงานติดตั้งของลูกค้ารายนี้?")) {
-                        onDeleteJob(job.id);
-                      }
-                    }}
-                    className="p-2.5 hover:bg-rose-50 border border-transparent hover:border-rose-100 rounded-xl text-slate-400 hover:text-rose-600 transition-all cursor-pointer"
-                    title="ลบโครงการ"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => onPreviewPDF(job)}
+                      className="flex-1 bg-slate-200/80 hover:bg-slate-300/80 border border-slate-300 text-slate-800 font-bold text-xs py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <FileText className="w-4 h-4 text-slate-600" />
+                      <span>Preview</span>
+                    </button>
+
+                    <button
+                      onClick={() => onExportPDF(job)}
+                      disabled={isExporting}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 shadow-md shadow-indigo-600/10 disabled:opacity-50 cursor-pointer"
+                    >
+                      <FileDown className="w-4 h-4" />
+                      <span>Export PDF</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             );

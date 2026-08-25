@@ -5,6 +5,7 @@ import { generateId } from "../lib/storage";
 import { CurtainAreaDrawer } from "./CurtainAreaDrawer";
 import { SearchableSelect } from "./SearchableSelect";
 import { getSolidFabricSwatch, getSheerFabricSwatch } from "../lib/fabricUtils";
+import { getDedicatedGeminiApiKey } from "../lib/indexedDbStorage";
 
 interface WindowEditorProps {
   winData?: WindowItem;
@@ -701,7 +702,7 @@ export const WindowEditor: React.FC<WindowEditorProps> = ({
           isRoller,
           solidFabricName: localData.solidFabricName,
           sheerFabricName: localData.sheerFabricName,
-          customGeminiApiKey: settings.customGeminiApiKey,
+          customGeminiApiKey: settings.customGeminiApiKey || getDedicatedGeminiApiKey() || undefined,
           distanceLeft: localData.distanceLeft,
           distanceRight: localData.distanceRight,
           distanceTop: localData.distanceTop,

@@ -10,12 +10,18 @@ import {
   subscribeWindows, 
   subscribeEmployees, 
   subscribeSettings, 
-  firebaseStorage 
+  subscribeQuotaStatus,
+  resetQuotaStatus,
+  QuotaStatus,
+  firebaseStorage,
+  DEFAULT_SETTINGS,
+  LOCAL_STORAGE_KEYS
 } from "./lib/firebaseStorage";
+import { getDedicatedGeminiApiKey } from "./lib/indexedDbStorage";
 import { Job, WindowItem, Employee, Settings } from "./types";
 import jsPDF from "jspdf";
 import { toJpeg } from "html-to-image";
-import { X, FileText, FileDown } from "lucide-react";
+import { X, FileText, FileDown, AlertTriangle, ExternalLink, RefreshCw, CheckCircle2 } from "lucide-react";
 
 export default function App() {
   // Authentication & Session Persistence
@@ -24,6 +30,14 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
+  // Quota status state
+  const [quotaStatus, setQuotaStatus] = useState<QuotaStatus>({
+    isExhausted: false,
+    upgradeUrl: "",
+    lastChecked: Date.now()
+  });
+  const [bannerDismissed, setBannerDismissed] = useState<boolean>(false);
+
   // Global App States with LocalStorage backup for persistent navigation
   const [activeTab, setActiveTab] = useState<string>(() => {
     return localStorage.getItem("curtain_active_tab") || "jobs";
@@ -31,11 +45,22 @@ export default function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [windows, setWindows] = useState<WindowItem[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [settings, setSettings] = useState<Settings>({
-    curtainStyles: [],
-    patterns: [],
-    tracks: [],
-    accessories: [],
+  const [settings, setSettings] = useState<Settings>(() => {
+    try {
+      const saved = localStorage.getItem(LOCAL_STORAGE_KEYS.SETTINGS);
+      const dedicatedKey = getDedicatedGeminiApiKey();
+      if (saved) {
+        const parsed: Settings = JSON.parse(saved);
+        if (dedicatedKey && !parsed.customGeminiApiKey) {
+          parsed.customGeminiApiKey = dedicatedKey;
+        }
+        return parsed;
+      }
+      if (dedicatedKey) {
+        return { ...DEFAULT_SETTINGS, customGeminiApiKey: dedicatedKey };
+      }
+    } catch {}
+    return { ...DEFAULT_SETTINGS };
   });
 
   const [activeEmployeeId, setActiveEmployeeId] = useState<string>(() => {
@@ -85,11 +110,16 @@ export default function App() {
       setSettings(loadedSettings);
     });
 
+    const unsubscribeQuota = subscribeQuotaStatus((status) => {
+      setQuotaStatus(status);
+    });
+
     return () => {
       unsubscribeJobs();
       unsubscribeWindows();
       unsubscribeEmployees();
       unsubscribeSettings();
+      unsubscribeQuota();
     };
   }, []);
 
@@ -150,6 +180,42 @@ export default function App() {
     } catch (e: any) {
       console.error("Failed to save settings to Firestore:", e);
       throw e;
+    }
+  };
+
+  const handleSaveSingleMaterial = async (collectionKey: any, item: any) => {
+    setSettings((prev) => {
+      const list = (((prev as any)[collectionKey] || []) as any[]).slice();
+      const idx = list.findIndex((x) => x.id === item.id);
+      if (idx >= 0) {
+        list[idx] = { ...item };
+      } else {
+        list.push({ ...item });
+      }
+      return {
+        ...prev,
+        [collectionKey]: list,
+      };
+    });
+    try {
+      await firebaseStorage.saveSingleMaterial(collectionKey, item);
+    } catch (e: any) {
+      console.error("Failed to save single material:", e);
+    }
+  };
+
+  const handleDeleteSingleMaterial = async (collectionKey: any, itemId: string) => {
+    setSettings((prev) => {
+      const list = (((prev as any)[collectionKey] || []) as any[]).filter((x) => x.id !== itemId);
+      return {
+        ...prev,
+        [collectionKey]: list,
+      };
+    });
+    try {
+      await firebaseStorage.deleteSingleMaterial(collectionKey, itemId);
+    } catch (e: any) {
+      console.error("Failed to delete single material:", e);
     }
   };
 
@@ -674,6 +740,55 @@ export default function App() {
         onLogout={handleLogout}
       />
 
+      {/* Quota Exhausted Warning & Fallback Status Banner */}
+      {quotaStatus.isExhausted && !bannerDismissed && (
+        <div className="bg-amber-500/10 border-b border-amber-500/20 px-4 py-3 text-amber-900 text-xs transition-all">
+          <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-1.5 bg-amber-500/20 text-amber-700 rounded-lg flex-shrink-0">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="font-bold text-amber-950">โควต้าเขียนฐานข้อมูล Firestore ฟรีต่อวันเต็ม (Free Tier Limit reached):</span>
+                <span className="ml-1.5 text-amber-800">
+                  ระบบได้เปิดโหมด <strong>Offline Local Cache</strong> ให้คุณอัตโนมัติแล้ว ข้อมูลงาน ราคา รูปภาพ และการตั้งค่าถูกบันทึกในเครื่องอย่างปลอดภัยครบถ้วน
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 self-end md:self-auto">
+              <a
+                href={quotaStatus.upgradeUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="bg-amber-600 hover:bg-amber-700 text-white font-bold px-3 py-1.5 rounded-lg transition inline-flex items-center gap-1 shadow-sm whitespace-nowrap"
+              >
+                <span>อัปเกรดแพ็กเกจ (Blaze)</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
+              <button
+                type="button"
+                onClick={() => {
+                  resetQuotaStatus();
+                }}
+                className="bg-white/80 hover:bg-white text-amber-900 font-semibold px-2.5 py-1.5 rounded-lg border border-amber-300/40 transition inline-flex items-center gap-1 shadow-2xs whitespace-nowrap cursor-pointer"
+                title="ทดสอบเชื่อมต่อฐานข้อมูลใหม่"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>ลองเชื่อมต่อใหม่</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBannerDismissed(true)}
+                className="text-amber-700 hover:text-amber-950 p-1.5 rounded-lg hover:bg-amber-500/20 transition cursor-pointer"
+                title="ปิดการแจ้งเตือนนี้"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {activeTab === "jobs" && (
@@ -719,6 +834,8 @@ export default function App() {
             employees={employees}
             settings={settings}
             onSaveSettings={handleSaveSettings}
+            onSaveSingleMaterial={handleSaveSingleMaterial}
+            onDeleteSingleMaterial={handleDeleteSingleMaterial}
             onSaveEmployee={handleSaveEmployee}
             onDeleteEmployee={handleDeleteEmployee}
             activeEmployeeId={activeEmployeeId}

@@ -1,15 +1,22 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { 
   Plus, Trash2, Users, Database, ShieldAlert, BadgeCheck, 
-  Palette, FileImage, Layers, Tag, Ruler, Sliders, Eye, Lock, Unlock, FolderUp, Edit3, Search, AlertCircle, X, Info, Files
+  Palette, FileImage, Layers, Tag, Ruler, Sliders, Eye, Lock, Unlock, FolderUp, Edit3, Search, AlertCircle, X, Info, Files, Loader2, CheckCircle2, Zap,
+  RefreshCw, Sparkles, ArrowRightLeft, HardDrive, Check, ExternalLink, AlertTriangle, ArrowRight, CheckSquare, Square,
+  Clock, Calendar, Filter, FolderCheck
 } from "lucide-react";
 import { Employee, Settings, FabricMaterial, StyleMaterial, HemMaterial } from "../types";
 import { generateId } from "../lib/storage";
+import { markItemDeleted } from "../lib/firebaseStorage";
+import { isDriveConnected, requestDriveAccessToken, clearDriveToken, uploadSwatchToDrive, getSavedDriveToken, getOrCreateSwatchFolder } from "../lib/googleDrive";
+import { getDedicatedGeminiApiKey, saveDedicatedGeminiApiKey, removeDedicatedGeminiApiKey } from "../lib/indexedDbStorage";
 
 interface SettingsViewProps {
   employees: Employee[];
   settings: Settings;
   onSaveSettings: (settings: Settings, onProgress?: (pct: number) => void) => Promise<void>;
+  onSaveSingleMaterial?: (collectionKey: any, item: any) => Promise<void>;
+  onDeleteSingleMaterial?: (collectionKey: any, itemId: string) => Promise<void>;
   onSaveEmployee: (employee: Employee) => void;
   onDeleteEmployee: (id: string) => void;
   activeEmployeeId: string;
@@ -19,6 +26,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   employees,
   settings,
   onSaveSettings: propOnSaveSettings,
+  onSaveSingleMaterial,
+  onDeleteSingleMaterial,
   onSaveEmployee,
   onDeleteEmployee,
   activeEmployeeId,
@@ -34,27 +43,152 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }, 4000);
   };
 
-  const onSaveSettings = async (updatedSettings: Settings) => {
-    setIsSaving(true);
-    setSaveProgress(0);
+  // Fast Quick Edit Modal State for instant text editing without full catalog reload
+  const [quickEditState, setQuickEditState] = useState<{
+    isOpen: boolean;
+    category: "solid" | "sheer" | "blind" | "roller" | "tape" | "style" | "hem" | "employee" | "track" | "accessory";
+    item: any;
+    collectionKey: "solidFabricMaterials" | "sheerFabricMaterials" | "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" | "styleMaterials" | "hemMaterials" | "employees" | "trackMaterials" | "accessoryMaterials";
+  } | null>(null);
+
+  const [qeName, setQeName] = useState("");
+  const [qeColorName, setQeColorName] = useState("");
+  const [qeType, setQeType] = useState("");
+  const [qeOps, setQeOps] = useState("");
+  const [qeStyleEn, setQeStyleEn] = useState("");
+  const [qeUsername, setQeUsername] = useState("");
+  const [qePassword, setQePassword] = useState("");
+  const [qeRole, setQeRole] = useState<"admin" | "designer" | "installer">("designer");
+  const [qeQuota, setQeQuota] = useState(30);
+
+  const openQuickEdit = (
+    category: "solid" | "sheer" | "blind" | "roller" | "tape" | "style" | "hem" | "employee" | "track" | "accessory",
+    item: any,
+    collectionKey: "solidFabricMaterials" | "sheerFabricMaterials" | "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" | "styleMaterials" | "hemMaterials" | "employees" | "trackMaterials" | "accessoryMaterials"
+  ) => {
+    setQuickEditState({ isOpen: true, category, item, collectionKey });
+    setQeName(item.name || "");
+    setQeColorName(item.colorName || "");
+    setQeType(item.type || item.category || "Blackout");
+    setQeOps(Array.isArray(item.operationOptions) ? item.operationOptions.join(", ") : (item.operationOptions || ""));
+    setQeStyleEn(item.styleEnForAi || "");
+    setQeUsername(item.username || "");
+    setQePassword(item.password || "");
+    setQeRole(item.role || "designer");
+    setQeQuota(item.aiQuota !== undefined ? item.aiQuota : 30);
+  };
+
+  const handleQuickSave = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!quickEditState) return;
+
+    const { category, item, collectionKey } = quickEditState;
+    if (!qeName.trim()) {
+      showToast("กรุณาระบุชื่อรายการ", "error");
+      return;
+    }
+
+    if (category === "employee") {
+      const updatedEmp: Employee = {
+        ...item,
+        name: qeName.trim(),
+        username: qeUsername.trim() || undefined,
+        password: qePassword.trim() || undefined,
+        role: qeRole,
+        aiQuota: qeQuota,
+      };
+      onSaveEmployee(updatedEmp);
+      setQuickEditState(null);
+      showToast(`✓ แก้ไขข้อมูลพนักงาน "${updatedEmp.name}" เรียบร้อยแล้ว (บันทึกทันที)`, "success");
+      return;
+    }
+
+    let updatedItem: any = { ...item };
+    if (category === "solid" || category === "sheer" || category === "blind" || category === "roller" || category === "tape") {
+      updatedItem = {
+        ...item,
+        name: qeName.trim().toUpperCase(),
+        colorName: qeColorName.trim().toUpperCase(),
+        type: qeType.trim(),
+      };
+    } else if (category === "track" || category === "accessory" || category === "hem") {
+      updatedItem = {
+        ...item,
+        name: qeName.trim(),
+      };
+    } else if (category === "style") {
+      const opsList = qeOps.split(",").map((s) => s.trim()).filter(Boolean);
+      updatedItem = {
+        ...item,
+        name: qeName.trim(),
+        category: qeType || item.category || "curtain",
+        operationOptions: opsList.length > 0 ? opsList : undefined,
+        styleEnForAi: qeStyleEn.trim() || undefined,
+      };
+    }
+
+    // Fast direct single-item update (0 sec, no heavy Google Drive progress popup)
+    if (onSaveSingleMaterial && collectionKey !== "employees" && collectionKey !== "trackMaterials" && collectionKey !== "accessoryMaterials") {
+      await onSaveSingleMaterial(collectionKey, updatedItem);
+    } else if (collectionKey !== "employees") {
+      const currentList = ((settings as any)[collectionKey] || []) as any[];
+      const nextList = currentList.map((x) => (x.id === item.id ? updatedItem : x));
+      await onSaveSettings({ ...settings, [collectionKey]: nextList }, true);
+    }
+
+    setQuickEditState(null);
+    showToast(`✓ บันทึกแก้ไขข้อความ "${updatedItem.name}${updatedItem.colorName ? ' / ' + updatedItem.colorName : ''}" เรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)`, "success");
+  };
+
+  const [driveConnected, setDriveConnected] = useState<boolean>(false);
+  const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
+
+  useEffect(() => {
+    setDriveConnected(isDriveConnected());
+  }, []);
+
+  const handleConnectDrive = async () => {
+    setIsConnectingDrive(true);
+    try {
+      await requestDriveAccessToken();
+      setDriveConnected(true);
+      showToast("เชื่อมต่อ Google Drive สำเร็จ! รูปภาพสวอชใหม่จะถูกจัดเก็บลงใน Google Drive ถาวร", "success");
+    } catch (err: any) {
+      showToast(`เชื่อมต่อ Google Drive ไม่สำเร็จ: ${err?.message || "User cancelled"}`, "error");
+    } finally {
+      setIsConnectingDrive(false);
+    }
+  };
+
+  const handleDisconnectDrive = () => {
+    clearDriveToken();
+    setDriveConnected(false);
+    showToast("ยกเลิกการเชื่อมต่อ Google Drive เรียบร้อยแล้ว", "info");
+  };
+
+  const onSaveSettings = async (updatedSettings: Settings, isSilentTextSave = false) => {
+    if (!isSilentTextSave) {
+      setIsSaving(true);
+      setSaveProgress(0);
+    }
     try {
       await propOnSaveSettings(updatedSettings, (pct) => {
-        setSaveProgress(pct);
+        if (!isSilentTextSave) setSaveProgress(pct);
       });
-      // Delay slightly for smooth completion animation
-      setTimeout(() => {
-        showToast("สำเร็จ: บันทึกการเปลี่ยนแปลงข้อมูลระบบเรียบร้อยแล้ว!", "success");
-      }, 300);
+      // Smooth completion toast
+      showToast("✓ บันทึกการเปลี่ยนแปลงข้อมูลระบบเรียบร้อยแล้ว", "success");
     } catch (err: any) {
       showToast(`บันทึกไม่สำเร็จ: ${err?.message || "เกิดข้อผิดพลาดในการบันทึกข้อมูล"}`, "error");
     } finally {
-      setIsSaving(false);
-      setSaveProgress(null);
+      if (!isSilentTextSave) {
+        setIsSaving(false);
+        setSaveProgress(null);
+      }
     }
   };
 
   const handleClearList = async () => {
-    if (clearConfirmInput.trim() !== "CONFIRM") {
+    if (clearConfirmInput.trim().toUpperCase() !== "CONFIRM") {
       showToast("กรุณากรอกคำว่า CONFIRM ให้ถูกต้องเพื่อยืนยันการล้างข้อมูล", "error");
       return;
     }
@@ -64,22 +198,67 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     let updatedSettings = { ...settings };
     let label = "";
 
+    const markAllDeleted = (list: { id: string }[] = []) => {
+      list.forEach((item) => {
+        if (item && item.id) markItemDeleted(item.id);
+      });
+    };
+
     if (clearTarget === "solid") {
+      markAllDeleted(settings.solidFabricMaterials);
       updatedSettings.solidFabricMaterials = [];
-      label = "ผ้าม่านทึบ";
+      label = "ผ้าม่านทึบแสง";
     } else if (clearTarget === "sheer") {
+      markAllDeleted(settings.sheerFabricMaterials);
       updatedSettings.sheerFabricMaterials = [];
-      label = "ผ้าม่านโปร่ง";
+      label = "ผ้าม่านโปร่งแสง";
     } else if (clearTarget === "blind") {
+      markAllDeleted(settings.blindMaterials);
       updatedSettings.blindMaterials = [];
-      label = "มู่ลี่";
+      label = "มู่ลี่ไม้และมู่ลี่อะลูมิเนียม";
     } else if (clearTarget === "roller") {
+      markAllDeleted(settings.rollerMaterials);
       updatedSettings.rollerMaterials = [];
       label = "ม่านม้วน";
+    } else if (clearTarget === "tape") {
+      markAllDeleted(settings.blindTapeMaterials);
+      updatedSettings.blindTapeMaterials = [];
+      label = "เทปผ้าสำหรับตกแต่งมู่ลี่";
+    } else if (clearTarget === "styles") {
+      markAllDeleted(settings.styleMaterials);
+      updatedSettings.styleMaterials = [];
+      label = "รูปแบบผ้าม่านและวิธีใช้งาน";
+    } else if (clearTarget === "hems") {
+      markAllDeleted(settings.hemMaterials);
+      updatedSettings.hemMaterials = [];
+      label = "สเปกระยะชายม่าน";
+    } else if (clearTarget === "tracks") {
+      updatedSettings.trackMaterials = [];
+      label = "รายการรางม่าน";
+    } else if (clearTarget === "accessories") {
+      updatedSettings.accessoryMaterials = [];
+      label = "รายการอุปกรณ์เสริม";
+    } else if (clearTarget === "all_materials") {
+      markAllDeleted(settings.solidFabricMaterials);
+      markAllDeleted(settings.sheerFabricMaterials);
+      markAllDeleted(settings.blindMaterials);
+      markAllDeleted(settings.rollerMaterials);
+      markAllDeleted(settings.blindTapeMaterials);
+      markAllDeleted(settings.styleMaterials);
+      markAllDeleted(settings.hemMaterials);
+      updatedSettings.solidFabricMaterials = [];
+      updatedSettings.sheerFabricMaterials = [];
+      updatedSettings.blindMaterials = [];
+      updatedSettings.rollerMaterials = [];
+      updatedSettings.blindTapeMaterials = [];
+      updatedSettings.styleMaterials = [];
+      updatedSettings.hemMaterials = [];
+      label = "แคตตาล็อกวัสดุ สวอช และสเปกม่านทั้งหมด";
     }
 
     try {
       await onSaveSettings(updatedSettings);
+      showToast(`ล้างข้อมูล${label} สำเร็จเรียบร้อยแล้ว`, "success");
     } catch (err) {
       showToast(`ไม่สามารถล้างข้อมูลได้: ${err instanceof Error ? err.message : String(err)}`, "error");
     } finally {
@@ -130,7 +309,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   // Blinds & Rollers State
   const [blindName, setBlindName] = useState(""); // ชื่อผ้า/วัสดุ
   const [blindColorName, setBlindColorName] = useState(""); // สีผ้า
-  const [blindType, setBlindType] = useState("Wood Blinds"); // Wood Blinds, Roller, Fabric Tape
+  const [blindType, setBlindType] = useState("Wood Blinds"); // Wood Blinds, Aluminum Blinds, Roller, Fabric Tape
+  const [folderUploadBlindType, setFolderUploadBlindType] = useState("Wood Blinds");
   const [blindImg, setBlindImg] = useState<string>("");
 
   // Editing state trackers for editing existing entries
@@ -145,136 +325,749 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [solidSearch, setSolidSearch] = useState("");
   const [sheerSearch, setSheerSearch] = useState("");
 
+  // Upload Batch Filter States
+  const [batchFilterSolid, setBatchFilterSolid] = useState<string>("all");
+  const [batchFilterSheer, setBatchFilterSheer] = useState<string>("all");
+  const [batchFilterBlind, setBatchFilterBlind] = useState<string>("all");
+  const [batchFilterRoller, setBatchFilterRoller] = useState<string>("all");
+  const [batchFilterTape, setBatchFilterTape] = useState<string>("all");
+
   // Clear lists confirmation state
-  const [clearTarget, setClearTarget] = useState<"solid" | "sheer" | "blind" | "roller" | null>(null);
+  const [clearTarget, setClearTarget] = useState<"solid" | "sheer" | "blind" | "roller" | "tape" | "styles" | "hems" | "tracks" | "accessories" | "all_materials" | null>(null);
+  const [clearModalTab, setClearModalTab] = useState<"batches" | "all">("batches");
   const [clearConfirmInput, setClearConfirmInput] = useState("");
 
-  // Helper to convert image files to Base64
-  const processImage = (file: File, onComplete: (base64: string) => void) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        const MAX_WIDTH = 400; // Increased width for pristine high-definition swatches in PDF
-        const scale = MAX_WIDTH / img.width;
-        canvas.width = MAX_WIDTH;
-        canvas.height = img.height * scale;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          const compressedBase64 = canvas.toDataURL("image/jpeg", 0.85); // High quality for crisp PDF rendering
-          onComplete(compressedBase64);
-        }
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
+  // Specific Batch Deletion Confirmation Modal State
+  const [batchConfirmDeleteState, setBatchConfirmDeleteState] = useState<{
+    targetCategory: "solid" | "sheer" | "blind" | "roller" | "tape" | "all_materials";
+    batchId: string;
+    batchName: string;
+    count: number;
+  } | null>(null);
+
+  // State for bulk import progress
+  const [bulkUploadStatus, setBulkUploadStatus] = useState<{
+    active: boolean;
+    phase: "processing" | "saving";
+    current: number;
+    total: number;
+    title: string;
+  } | null>(null);
+
+  // Duplicate review structures & modal states
+  interface DuplicateReviewItem {
+    newItem: FabricMaterial;
+    existingItem: FabricMaterial;
+    overwrite: boolean;
+  }
+
+  const [duplicateModalState, setDuplicateModalState] = useState<{
+    isOpen: boolean;
+    dbType: "solid" | "sheer" | "blinds";
+    blindSubtype: string;
+    duplicateItems: DuplicateReviewItem[];
+    uniqueNewItems: FabricMaterial[];
+    typeTitle: string;
+  } | null>(null);
+
+  const [singleDuplicateConfirm, setSingleDuplicateConfirm] = useState<{
+    isOpen: boolean;
+    existingItem: FabricMaterial;
+    newItem: FabricMaterial;
+    category: "solid" | "sheer" | "blinds";
+    blindTargetKey?: "blindMaterials" | "rollerMaterials" | "blindTapeMaterials";
+  } | null>(null);
+
+  // Sync API Key input with settings or dedicated permanent storage
+  useEffect(() => {
+    if (settings.customGeminiApiKey) {
+      setCustomApiKey(settings.customGeminiApiKey);
+    } else {
+      const dedicated = getDedicatedGeminiApiKey();
+      if (dedicated) {
+        setCustomApiKey(dedicated);
+      }
+    }
+  }, [settings.customGeminiApiKey]);
+
+  // Universal string normalizer for swatch matching (strips spaces, symbols, cases)
+  const normalizeSwatchText = (str: string): string => {
+    return (str || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[\s\-_/\\.:,()[\]{}#@!~*|]+/g, "");
   };
 
-  // Folder/Bulk Upload Handler
-  const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>, dbType: "solid" | "sheer" | "blinds") => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  // Format ISO timestamp to friendly Thai date string
+  const formatThaiDate = (isoStr?: string) => {
+    if (!isoStr) return "";
+    try {
+      const d = new Date(isoStr);
+      return d.toLocaleDateString("th-TH", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch {
+      return isoStr;
+    }
+  };
 
-    const importedItems: FabricMaterial[] = [];
-    let processedCount = 0;
+  interface UploadBatchSummary {
+    batchId: string;
+    batchName: string;
+    uploadedAt?: string;
+    count: number;
+    sampleImages: string[];
+    fabricNames: string[];
+  }
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      if (!file.type.startsWith("image/")) continue;
+  // Aggregate list items by upload batch ID with thumbnail samples and fabric names
+  const getBatchSummaries = (list: FabricMaterial[] = []): UploadBatchSummary[] => {
+    const map = new Map<string, {
+      batchId: string;
+      batchName: string;
+      uploadedAt?: string;
+      count: number;
+      sampleImages: string[];
+      fabricNames: Set<string>;
+    }>();
 
-      // Extract folder and file names
-      // webkitRelativePath format e.g., "Folder_Name/File_Name.jpg"
-      const relPath = file.webkitRelativePath || "";
-      const pathParts = relPath.split("/");
+    for (const item of list) {
+      const bId = item.uploadBatchId || "legacy_manual";
+      const bName = item.uploadBatchName || (item.uploadBatchId ? `รอบอัปโหลด #${item.uploadBatchId.substring(0, 8)}` : "รายการตั้งต้น / เพิ่มทีละรายการ");
+      const existing = map.get(bId);
 
-      let parsedFabricName = "";
-      let parsedColorName = "";
-
-      if (pathParts.length >= 2 && pathParts[pathParts.length - 2] !== "") {
-        // Folder name is fabric brand name
-        parsedFabricName = pathParts[pathParts.length - 2].toUpperCase();
-        // File name is color name
-        const fileName = pathParts[pathParts.length - 1];
-        parsedColorName = fileName.substring(0, fileName.lastIndexOf(".")).toUpperCase();
+      if (!existing) {
+        map.set(bId, {
+          batchId: bId,
+          batchName: bName,
+          uploadedAt: item.uploadedAt,
+          count: 1,
+          sampleImages: item.imageBase64 ? [item.imageBase64] : [],
+          fabricNames: new Set(item.name ? [item.name] : []),
+        });
       } else {
-        // Fallback if flat upload: try to parse brand and color from file name
-        const fileNameNoExt = file.name.substring(0, file.name.lastIndexOf("."));
-        // Try delimiters: space-hyphen-space " - ", underscore "_", hyphen "-"
-        let parsed = false;
-        const delimiters = [" - ", "_", " -", "- ", "-"];
-        for (const delim of delimiters) {
-          const parts = fileNameNoExt.split(delim);
+        existing.count += 1;
+        if (!existing.uploadedAt && item.uploadedAt) existing.uploadedAt = item.uploadedAt;
+        if (item.imageBase64 && existing.sampleImages.length < 5) {
+          existing.sampleImages.push(item.imageBase64);
+        }
+        if (item.name && existing.fabricNames.size < 6) {
+          existing.fabricNames.add(item.name);
+        }
+      }
+    }
+
+    return Array.from(map.values())
+      .sort((a, b) => {
+        if (a.batchId === "legacy_manual") return 1;
+        if (b.batchId === "legacy_manual") return -1;
+        if (a.uploadedAt && b.uploadedAt) {
+          return new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime();
+        }
+        return 0;
+      })
+      .map((v) => ({
+        batchId: v.batchId,
+        batchName: v.batchName,
+        uploadedAt: v.uploadedAt,
+        count: v.count,
+        sampleImages: v.sampleImages,
+        fabricNames: Array.from(v.fabricNames),
+      }));
+  };
+
+  // Dedicated Handler: Clear items belonging to a specific batch session
+  const handleClearBatch = async (
+    targetCategory: "solid" | "sheer" | "blind" | "roller" | "tape" | "all_materials",
+    batchId: string,
+    batchName: string
+  ) => {
+    let updatedSettings = { ...settings };
+    let deletedCount = 0;
+
+    const filterOutBatch = (list: FabricMaterial[] = []) => {
+      const before = list.length;
+      const filtered: FabricMaterial[] = [];
+      list.forEach((item) => {
+        const isTarget = batchId === "legacy_manual" ? !item.uploadBatchId : item.uploadBatchId === batchId;
+        if (isTarget) {
+          if (item.id) markItemDeleted(item.id);
+        } else {
+          filtered.push(item);
+        }
+      });
+      deletedCount += (before - filtered.length);
+      return filtered;
+    };
+
+    if (targetCategory === "solid" || targetCategory === "all_materials") {
+      updatedSettings.solidFabricMaterials = filterOutBatch(settings.solidFabricMaterials || []);
+    }
+    if (targetCategory === "sheer" || targetCategory === "all_materials") {
+      updatedSettings.sheerFabricMaterials = filterOutBatch(settings.sheerFabricMaterials || []);
+    }
+    if (targetCategory === "blind" || targetCategory === "all_materials") {
+      updatedSettings.blindMaterials = filterOutBatch(settings.blindMaterials || []);
+    }
+    if (targetCategory === "roller" || targetCategory === "all_materials") {
+      updatedSettings.rollerMaterials = filterOutBatch(settings.rollerMaterials || []);
+    }
+    if (targetCategory === "tape" || targetCategory === "all_materials") {
+      updatedSettings.blindTapeMaterials = filterOutBatch(settings.blindTapeMaterials || []);
+    }
+
+    try {
+      setIsSaving(true);
+      await onSaveSettings(updatedSettings);
+      showToast(`ลบล้างข้อมูลรอบ "${batchName}" จำนวน ${deletedCount} รายการ สำเร็จ!`, "success");
+      setBatchConfirmDeleteState(null);
+    } catch (err: any) {
+      showToast(`ไม่สามารถลบข้อมูลรอบได้: ${err?.message || String(err)}`, "error");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  // Find exact or normalized match in a swatch list
+  const findExistingSwatchMatch = (
+    incoming: FabricMaterial,
+    list: FabricMaterial[]
+  ): { match: FabricMaterial; index: number } | null => {
+    const incName = normalizeSwatchText(incoming.name);
+    const incColor = normalizeSwatchText(incoming.colorName);
+
+    if (!incName || !incColor) return null;
+
+    for (let i = 0; i < list.length; i++) {
+      const existing = list[i];
+      const exName = normalizeSwatchText(existing.name);
+      const exColor = normalizeSwatchText(existing.colorName);
+
+      // Exact match for BOTH fabric collection name AND color code
+      if (incName === exName && incColor === exColor) {
+        return { match: existing, index: i };
+      }
+    }
+    return null;
+  };
+
+  // Smart Parser for Fabric Brand and Color Code from relative file path or file name
+  // Standard Rule:
+  // - When uploading a FOLDER: Folder Name = Fabric Name (ชื่อผ้า), File Name = Color Name (ชื่อสี)
+  // - When uploading LOOSE FILES: Delimited filename = Fabric Name & Color Name
+  const parseFabricAndColorFromPath = (relPath: string, fileName: string) => {
+    // Normalize Windows backslashes to standard forward slashes
+    const normalizedRelPath = (relPath || "").replace(/\\+/g, "/");
+    const normalizedFileName = (fileName || "").replace(/\\+/g, "/").split("/").pop() || "";
+
+    const pathParts = normalizedRelPath.split("/").filter(Boolean);
+    const lastDotIndex = normalizedFileName.lastIndexOf(".");
+    const fileNameNoExt = (lastDotIndex > 0 ? normalizedFileName.substring(0, lastDotIndex) : normalizedFileName).trim();
+    
+    let fabricName = "";
+    let colorName = "";
+
+    // CASE 1: FOLDER UPLOAD (Path has directory structure e.g. "DIMOUT/01.jpg", "SATIN/DO-01.jpg", or "Curtains/VELVET/01.png")
+    if (pathParts.length >= 2) {
+      // Immediate parent folder is strictly the Fabric Name (ชื่อผ้า / ชื่อคอลเลกชัน)
+      let rawFolder = pathParts[pathParts.length - 2].trim();
+      // If the parent folder name is a generic wrapper folder (e.g. "images", "swatches", "photos"), look at grandparent folder
+      const genericWrappers = ["images", "img", "photos", "swatches", "swatch", "files", "photo", "pic", "pics"];
+      if (genericWrappers.includes(rawFolder.toLowerCase()) && pathParts.length >= 3) {
+        rawFolder = pathParts[pathParts.length - 3].trim();
+      }
+      fabricName = rawFolder;
+      colorName = fileNameNoExt.trim();
+
+      // Clean up color name if it repeats the fabric name as a prefix (e.g. folder "DIMOUT" with file "DIMOUT-01.jpg" -> color "01")
+      const escapedFabric = fabricName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const prefixRegex = new RegExp(`^${escapedFabric}[\\s\\-_–—]+`, "i");
+      if (prefixRegex.test(colorName)) {
+        const stripped = colorName.replace(prefixRegex, "").trim();
+        if (stripped) colorName = stripped;
+      }
+      // If filename is identical to folder name (e.g. folder "DIMOUT" with file "DIMOUT.jpg"), avoid identical name/color
+      if (colorName.toLowerCase() === fabricName.toLowerCase()) {
+        colorName = "01";
+      }
+    } else {
+      // CASE 2: LOOSE FILE UPLOAD (User selected individual files without folder hierarchy)
+      // Check multi-character delimiters e.g. "DIMOUT - DO-01", "DIMOUT _ 01", "DIMOUT – 01", "DIMOUT — 01"
+      const multiDelims = [" - ", " _ ", " – ", " — ", " -", "- "];
+      let parsedFromDelim = false;
+      for (const d of multiDelims) {
+        if (fileNameNoExt.includes(d)) {
+          const parts = fileNameNoExt.split(d).filter(Boolean);
           if (parts.length >= 2) {
-            parsedFabricName = parts[0].trim().toUpperCase();
-            parsedColorName = parts.slice(1).join(delim).trim().toUpperCase();
-            parsed = true;
+            fabricName = parts[0].trim();
+            colorName = parts.slice(1).join(" ").trim();
+            parsedFromDelim = true;
             break;
           }
         }
-        if (!parsed) {
-          parsedFabricName = "IMPORTED";
-          parsedColorName = fileNameNoExt.trim().toUpperCase();
+      }
+
+      // Check underscore e.g. "DIMOUT_DO01"
+      if (!parsedFromDelim && fileNameNoExt.includes("_")) {
+        const parts = fileNameNoExt.split("_").filter(Boolean);
+        if (parts.length >= 2) {
+          fabricName = parts[0].trim();
+          colorName = parts.slice(1).join("_").trim();
+          parsedFromDelim = true;
         }
       }
 
-      try {
-        const base64 = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = (evt) => {
-            const img = new Image();
-            img.onload = () => {
-              const canvas = document.createElement("canvas");
-              const MAX_WIDTH = 400; // Increased width for pristine high-definition swatches in PDF
-              const scale = MAX_WIDTH / img.width;
-              canvas.width = MAX_WIDTH;
-              canvas.height = img.height * scale;
-              const ctx = canvas.getContext("2d");
-              if (ctx) {
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                resolve(canvas.toDataURL("image/jpeg", 0.85)); // Use 0.85 quality for sharp swatches
-              } else reject(new Error("Canvas error"));
-            };
-            img.src = evt.target?.result as string;
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
+      // Check hyphen only if first part contains letters and not just numbers (e.g. "CITADEL-01")
+      if (!parsedFromDelim && fileNameNoExt.includes("-")) {
+        const parts = fileNameNoExt.split("-").filter(Boolean);
+        if (parts.length >= 2 && !/^\d+$/.test(parts[0])) {
+          fabricName = parts[0].trim();
+          colorName = parts.slice(1).join("-").trim();
+          parsedFromDelim = true;
+        }
+      }
 
-        importedItems.push({
-          id: generateId(),
-          name: parsedFabricName,
-          colorName: parsedColorName,
-          type: dbType === "sheer" ? "Sheer" : dbType === "solid" ? folderUploadType : "Wood Blinds",
-          imageBase64: base64,
-        });
-        processedCount++;
-      } catch (err) {
-        console.error("Error processing file", file.name, err);
+      // Fallback for single file without delimiters
+      if (!parsedFromDelim) {
+        fabricName = "FABRIC";
+        colorName = fileNameNoExt.trim();
       }
     }
+
+    // Clean up empty fallbacks
+    if (!fabricName) fabricName = "FABRIC";
+    if (!colorName) colorName = fileNameNoExt.trim() || "01";
+
+    return { fabricName, colorName };
+  };
+
+  // Fast helper to convert and resize image files to high-definition crisp swatches
+  const convertFileToSwatchBase64 = async (file: File): Promise<string> => {
+    if (typeof createImageBitmap === "function") {
+      try {
+        const bitmap = await createImageBitmap(file);
+        const canvas = document.createElement("canvas");
+        // 480px with 0.85 quality provides high-definition clarity for AI to capture fine fabric texture & weave
+        const MAX_DIM = 480;
+        const scale = Math.min(MAX_DIM / bitmap.width, MAX_DIM / bitmap.height, 1);
+        canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+        canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
+          ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          bitmap.close();
+          return canvas.toDataURL("image/jpeg", 0.85);
+        }
+      } catch {
+        // fallback to FileReader below
+      }
+    }
+
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const MAX_DIM = 480;
+          const scale = Math.min(MAX_DIM / img.width, MAX_DIM / img.height, 1);
+          canvas.width = Math.max(1, Math.round(img.width * scale));
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          const ctx = canvas.getContext("2d");
+          if (ctx) {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = "high";
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL("image/jpeg", 0.85));
+          } else reject(new Error("Canvas error"));
+        };
+        img.onerror = reject;
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Helper to convert single image file to Base64
+  const processImage = (file: File, onComplete: (base64: string) => void) => {
+    convertFileToSwatchBase64(file)
+      .then(onComplete)
+      .catch((err) => console.error("Error compressing image:", err));
+  };
+
+  // Commit and Save Materials with Overwrite support
+  const commitImportedMaterials = async (
+    dbType: "solid" | "sheer" | "blinds",
+    blindSubtype: string,
+    newItemsToAdd: FabricMaterial[],
+    duplicateItems: DuplicateReviewItem[],
+    typeTitle: string
+  ) => {
+    let updatedSettings: Settings = { ...settings };
+    let overwrittenCount = 0;
+    let addedCount = newItemsToAdd.length;
+
+    const applyOverwritesAndAdds = (currentList: FabricMaterial[] = []): FabricMaterial[] => {
+      let list = [...currentList];
+      for (const dupe of duplicateItems) {
+        if (dupe.overwrite) {
+          const matchIdx = list.findIndex(
+            (x) =>
+              x.id === dupe.existingItem.id ||
+              (normalizeSwatchText(x.name) === normalizeSwatchText(dupe.existingItem.name) &&
+               normalizeSwatchText(x.colorName) === normalizeSwatchText(dupe.existingItem.colorName))
+          );
+          if (matchIdx >= 0) {
+            list[matchIdx] = {
+              ...list[matchIdx],
+              name: dupe.newItem.name,
+              colorName: dupe.newItem.colorName,
+              type: dupe.newItem.type || list[matchIdx].type,
+              imageBase64: dupe.newItem.imageBase64 || list[matchIdx].imageBase64,
+              uploadBatchId: dupe.newItem.uploadBatchId || list[matchIdx].uploadBatchId,
+              uploadBatchName: dupe.newItem.uploadBatchName || list[matchIdx].uploadBatchName,
+              uploadedAt: dupe.newItem.uploadedAt || list[matchIdx].uploadedAt,
+            };
+            overwrittenCount++;
+          }
+        }
+      }
+      list.push(...newItemsToAdd);
+      return list;
+    };
+
+    if (dbType === "solid") {
+      updatedSettings.solidFabricMaterials = applyOverwritesAndAdds(settings.solidFabricMaterials || []);
+    } else if (dbType === "sheer") {
+      updatedSettings.sheerFabricMaterials = applyOverwritesAndAdds(settings.sheerFabricMaterials || []);
+    } else {
+      if (blindSubtype === "Roller Shades") {
+        updatedSettings.rollerMaterials = applyOverwritesAndAdds(settings.rollerMaterials || []);
+      } else if (blindSubtype === "Fabric Tape") {
+        updatedSettings.blindTapeMaterials = applyOverwritesAndAdds(settings.blindTapeMaterials || []);
+      } else {
+        updatedSettings.blindMaterials = applyOverwritesAndAdds(settings.blindMaterials || []);
+      }
+    }
+
+    setSaveProgress(90);
+    await onSaveSettings(updatedSettings);
+    setSaveProgress(100);
+
+    let summaryMsg = `นำเข้า ${typeTitle} สำเร็จ!`;
+    if (overwrittenCount > 0) {
+      summaryMsg += ` บันทึกทับข้อมูลเดิม ${overwrittenCount} รายการ`;
+    }
+    if (addedCount > 0) {
+      summaryMsg += ` เพิ่มรายการใหม่ ${addedCount} รายการ`;
+    }
+    showToast(summaryMsg, "success");
+  };
+
+  // High-Speed Parallel Folder/Bulk Upload Handler with Duplicate Detection
+  const handleFolderUpload = async (e: React.ChangeEvent<HTMLInputElement>, dbType: "solid" | "sheer" | "blinds") => {
+    const rawFiles = e.target.files;
+    if (!rawFiles || rawFiles.length === 0) return;
+
+    const files = (Array.from(rawFiles) as File[]).filter(
+      (f) => f.type.startsWith("image/") || /\.(jpg|jpeg|png|webp|bmp|gif|jfif|heic|heif|tiff|svg)$/i.test(f.name)
+    );
+
+    if (files.length === 0) {
+      showToast("ไม่พบไฟล์รูปภาพในโฟลเดอร์ที่เลือก กรุณาเลือกไฟล์รูปภาพ .jpg, .png หรือ .webp", "error");
+      e.target.value = "";
+      return;
+    }
+
+    const typeTitle = dbType === "solid" 
+      ? `ผ้าม่านทึบแสง (${folderUploadType})` 
+      : dbType === "sheer" 
+      ? "ผ้าม่านโปร่งแสง" 
+      : folderUploadBlindType === "Roller Shades"
+      ? "ม่านม้วน (Roller Shades)"
+      : folderUploadBlindType === "Fabric Tape"
+      ? "เทปผ้าสำหรับมู่ลี่ (Fabric Tape)"
+      : folderUploadBlindType === "Aluminum Blinds"
+      ? "มู่ลี่อะลูมิเนียม (Aluminum Blinds)"
+      : "มู่ลี่ไม้ (Wood Blinds)";
+
+    const isDrive = isDriveConnected();
+
+    // Generate unique batch session ID and meaningful batch name
+    const uploadTimestamp = new Date().toISOString();
+    const batchId = `batch_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const firstRelPath = files[0]?.webkitRelativePath || files[0]?.name || "";
+    const firstPathParts = firstRelPath.split("/").filter(Boolean);
+    const parentFolderName = firstPathParts.length >= 2 ? firstPathParts[firstPathParts.length - 2].trim() : "";
+    
+    const batchName = parentFolderName 
+      ? `โฟลเดอร์ "${parentFolderName}"` 
+      : files.length > 1 
+      ? `นำเข้าไฟล์ (${files.length} รายการ)` 
+      : `นำเข้าไฟล์ "${files[0].name.replace(/\.[^/.]+$/, "")}"`;
+
+    setBulkUploadStatus({
+      active: true,
+      phase: "processing",
+      current: 0,
+      total: files.length,
+      title: typeTitle,
+    });
+    setSaveProgress(5);
+
+    // Preload Drive folder ID once to eliminate redundant network queries
+    const driveToken = getSavedDriveToken();
+    let preloadedFolderId: string | undefined = undefined;
+    if (isDrive && driveToken) {
+      try {
+        preloadedFolderId = await getOrCreateSwatchFolder(driveToken);
+      } catch (err) {
+        console.warn("Could not preload swatch folder:", err);
+      }
+    }
+
+    const importedItems: FabricMaterial[] = [];
+    let completedCount = 0;
+
+    // High-speed concurrent worker pool for image decoding, swatch compression, and Drive upload
+    const CONCURRENCY = 8;
+    let fileIdx = 0;
+
+    const workers = Array.from({ length: Math.min(CONCURRENCY, files.length) }, async () => {
+      while (fileIdx < files.length) {
+        const currentIndex = fileIdx++;
+        const file = files[currentIndex];
+        const relPath = file.webkitRelativePath || file.name;
+
+        const { fabricName: parsedFabricName, colorName: parsedColorName } = parseFabricAndColorFromPath(relPath, file.name);
+
+        try {
+          const base64 = await convertFileToSwatchBase64(file);
+          let finalImg = base64;
+
+          // If Google Drive is connected, upload directly to Drive in parallel
+          if (isDrive) {
+            const cleanName = `${parsedFabricName}_${parsedColorName}_${Date.now()}.jpg`.replace(/[^a-zA-Z0-9._-]/g, "_");
+            finalImg = await uploadSwatchToDrive(cleanName, base64, preloadedFolderId);
+          }
+
+          importedItems.push({
+            id: generateId(),
+            name: parsedFabricName,
+            colorName: parsedColorName,
+            type: dbType === "sheer" ? "Sheer" : dbType === "solid" ? folderUploadType : folderUploadBlindType,
+            imageBase64: finalImg,
+            uploadBatchId: batchId,
+            uploadBatchName: batchName,
+            uploadedAt: uploadTimestamp,
+          });
+        } catch (err) {
+          console.error("Error processing file:", file.name, err);
+        }
+
+        completedCount++;
+        const currentPct = Math.round((completedCount / files.length) * 80);
+        setSaveProgress(Math.max(5, currentPct));
+        setBulkUploadStatus({
+          active: true,
+          phase: "processing",
+          current: completedCount,
+          total: files.length,
+          title: typeTitle,
+        });
+      }
+    });
+
+    await Promise.all(workers);
 
     if (importedItems.length > 0) {
+      // Check against target database list for duplicates
+      let targetList: FabricMaterial[] = [];
       if (dbType === "solid") {
-        onSaveSettings({
-          ...settings,
-          solidFabricMaterials: [...(settings.solidFabricMaterials || []), ...importedItems],
-        });
+        targetList = settings.solidFabricMaterials || [];
       } else if (dbType === "sheer") {
-        onSaveSettings({
-          ...settings,
-          sheerFabricMaterials: [...(settings.sheerFabricMaterials || []), ...importedItems],
-        });
-      } else if (dbType === "blinds") {
-        // Save as wood/aluminum blinds or roller shades based on file naming or default to blinds
-        onSaveSettings({
-          ...settings,
-          blindMaterials: [...(settings.blindMaterials || []), ...importedItems],
-        });
+        targetList = settings.sheerFabricMaterials || [];
+      } else {
+        if (folderUploadBlindType === "Roller Shades") {
+          targetList = settings.rollerMaterials || [];
+        } else if (folderUploadBlindType === "Fabric Tape") {
+          targetList = settings.blindTapeMaterials || [];
+        } else {
+          targetList = settings.blindMaterials || [];
+        }
       }
-      showToast(`นำเข้าโฟลเดอร์เสร็จสิ้น! บันทึกสำเร็จทั้งหมด ${processedCount} รายการ โดยดึง "ชื่อผ้า" จากชื่อโฟลเดอร์ และ "สีผ้า" จากชื่อไฟล์รูปภาพ`, "success");
+
+      const uniqueNewItems: FabricMaterial[] = [];
+      const duplicateItems: DuplicateReviewItem[] = [];
+      const incomingKeyCounts = new Map<string, number>();
+
+      for (const item of importedItems) {
+        let incomingKey = normalizeSwatchText(`${item.name} ${item.colorName}`);
+        const count = (incomingKeyCounts.get(incomingKey) || 0) + 1;
+        incomingKeyCounts.set(incomingKey, count);
+
+        // If duplicate within the same batch, disambiguate instead of silently dropping!
+        let effectiveItem = item;
+        if (count > 1) {
+          effectiveItem = {
+            ...item,
+            colorName: `${item.colorName} (${count})`,
+          };
+          incomingKey = normalizeSwatchText(`${effectiveItem.name} ${effectiveItem.colorName}`);
+        }
+
+        const matchFound = findExistingSwatchMatch(effectiveItem, targetList);
+        if (matchFound) {
+          duplicateItems.push({
+            newItem: effectiveItem,
+            existingItem: matchFound.match,
+            overwrite: true, // Default checked for overwrite
+          });
+        } else {
+          uniqueNewItems.push(effectiveItem);
+        }
+      }
+
+      setBulkUploadStatus(null);
+
+      // If duplicate items are detected -> Open Confirmation Modal!
+      if (duplicateItems.length > 0) {
+        setDuplicateModalState({
+          isOpen: true,
+          dbType,
+          blindSubtype: folderUploadBlindType,
+          duplicateItems,
+          uniqueNewItems,
+          typeTitle,
+        });
+      } else {
+        // No duplicates -> Directly commit
+        await commitImportedMaterials(dbType, folderUploadBlindType, uniqueNewItems, [], typeTitle);
+      }
+    } else {
+      setBulkUploadStatus(null);
     }
+
+    e.target.value = "";
+  };
+
+  // Confirm single item overwrite
+  const handleConfirmSingleOverwrite = async () => {
+    if (!singleDuplicateConfirm) return;
+    const { existingItem, newItem, category, blindTargetKey } = singleDuplicateConfirm;
+
+    if (category === "solid") {
+      const list = (settings.solidFabricMaterials || []).map((item) =>
+        item.id === existingItem.id
+          ? {
+              ...item,
+              name: newItem.name,
+              colorName: newItem.colorName,
+              type: newItem.type || item.type,
+              imageBase64: newItem.imageBase64 || item.imageBase64,
+            }
+          : item
+      );
+      await onSaveSettings({ ...settings, solidFabricMaterials: list });
+      setFabricBrand("");
+      setFabricColorName("");
+      setFabricType("Blackout");
+      setFabricImg("");
+    } else if (category === "sheer") {
+      const list = (settings.sheerFabricMaterials || []).map((item) =>
+        item.id === existingItem.id
+          ? {
+              ...item,
+              name: newItem.name,
+              colorName: newItem.colorName,
+              type: "Sheer",
+              imageBase64: newItem.imageBase64 || item.imageBase64,
+            }
+          : item
+      );
+      await onSaveSettings({ ...settings, sheerFabricMaterials: list });
+      setFabricBrand("");
+      setFabricColorName("");
+      setFabricImg("");
+    } else if (category === "blinds" && blindTargetKey) {
+      const targetList = ((settings[blindTargetKey] as FabricMaterial[]) || []).map((item) =>
+        item.id === existingItem.id
+          ? {
+              ...item,
+              name: newItem.name,
+              colorName: newItem.colorName,
+              type: newItem.type || item.type,
+              imageBase64: newItem.imageBase64 || item.imageBase64,
+            }
+          : item
+      );
+      await onSaveSettings({ ...settings, [blindTargetKey]: targetList });
+      setBlindName("");
+      setBlindColorName("");
+      setBlindImg("");
+    }
+
+    showToast(`บันทึกทับข้อมูลสวอช ${newItem.name} - ${newItem.colorName} เรียบร้อยแล้ว`, "success");
+    setSingleDuplicateConfirm(null);
+  };
+
+  // One-Click Clean Duplicate Items across the whole catalog
+  const handleDeduplicateAllMaterials = async () => {
+    const dedupeList = (list: FabricMaterial[] = []) => {
+      const seen = new Map<string, FabricMaterial>();
+      let dupesRemoved = 0;
+      for (const item of list) {
+        const key = normalizeSwatchText(`${item.name} ${item.colorName}`);
+        if (!seen.has(key)) {
+          seen.set(key, item);
+        } else {
+          // If the new one has an image and the old one doesn't, keep the new one
+          const existing = seen.get(key)!;
+          if (!existing.imageBase64 && item.imageBase64) {
+            seen.set(key, item);
+          }
+          dupesRemoved++;
+        }
+      }
+      return { result: Array.from(seen.values()), dupesRemoved };
+    };
+
+    const solid = dedupeList(settings.solidFabricMaterials || []);
+    const sheer = dedupeList(settings.sheerFabricMaterials || []);
+    const blind = dedupeList(settings.blindMaterials || []);
+    const roller = dedupeList(settings.rollerMaterials || []);
+    const tape = dedupeList(settings.blindTapeMaterials || []);
+
+    const totalRemoved =
+      solid.dupesRemoved +
+      sheer.dupesRemoved +
+      blind.dupesRemoved +
+      roller.dupesRemoved +
+      tape.dupesRemoved;
+
+    if (totalRemoved === 0) {
+      showToast("ไม่พบรายการซ้ำในแคตตาล็อก ข้อมูลทุกรายการในระบบถูกต้องและไม่ซ้ำกันแล้ว!", "info");
+      return;
+    }
+
+    const updated: Settings = {
+      ...settings,
+      solidFabricMaterials: solid.result,
+      sheerFabricMaterials: sheer.result,
+      blindMaterials: blind.result,
+      rollerMaterials: roller.result,
+      blindTapeMaterials: tape.result,
+    };
+
+    await onSaveSettings(updated);
+    showToast(`ทำความสะอาดสำเร็จ! ค้นพบและลบรายการที่ซ้ำออกทั้งหมด ${totalRemoved} รายการเรียบร้อยแล้ว`, "success");
   };
 
   // Employee Operations
@@ -364,13 +1157,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setNewStyleEnForAi("");
   };
 
-  const handleRemoveStyle = (id: string) => {
-    const styleMaterials = settings.styleMaterials || [];
-    onSaveSettings({
-      ...settings,
-      styleMaterials: styleMaterials.filter((x) => x.id !== id),
-    });
+  const handleRemoveStyle = async (id: string) => {
+    markItemDeleted(id);
+    if (onDeleteSingleMaterial) {
+      await onDeleteSingleMaterial("styleMaterials", id);
+    } else {
+      const styleMaterials = settings.styleMaterials || [];
+      onSaveSettings({
+        ...settings,
+        styleMaterials: styleMaterials.filter((x) => x.id !== id),
+      }, true);
+    }
     if (editingStyleId === id) setEditingStyleId(null);
+    showToast("✓ ลบรูปแบบม่านเรียบร้อยแล้ว", "info");
   };
 
   // Hem operations
@@ -393,7 +1192,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       onSaveSettings({
         ...settings,
         hemMaterials: updated,
-      });
+      }, true);
       setEditingHemId(null);
     } else {
       // Create Mode
@@ -405,27 +1204,45 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       onSaveSettings({
         ...settings,
         hemMaterials: [...hemMaterials, newItem],
-      });
+      }, true);
     }
 
     setNewHemName("");
     setNewHemImg("");
   };
 
-  const handleRemoveHem = (id: string) => {
-    const hemMaterials = settings.hemMaterials || [];
-    onSaveSettings({
-      ...settings,
-      hemMaterials: hemMaterials.filter((x) => x.id !== id),
-    });
+  const handleRemoveHem = async (id: string) => {
+    markItemDeleted(id);
+    if (onDeleteSingleMaterial) {
+      await onDeleteSingleMaterial("hemMaterials", id);
+    } else {
+      const hemMaterials = settings.hemMaterials || [];
+      onSaveSettings({
+        ...settings,
+        hemMaterials: hemMaterials.filter((x) => x.id !== id),
+      }, true);
+    }
     if (editingHemId === id) setEditingHemId(null);
+    showToast("✓ ลบระยะชายม่านเรียบร้อยแล้ว", "info");
   };
 
   // Solid fabric operations
-  const handleAddSolidFabric = (e: React.FormEvent) => {
+  const handleAddSolidFabric = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!fabricBrand.trim() || !fabricColorName.trim()) return;
     const list = settings.solidFabricMaterials || [];
+    const bName = fabricBrand.trim().toUpperCase();
+    const cName = fabricColorName.trim().toUpperCase();
+
+    let finalImg = fabricImg || undefined;
+    if (finalImg && isDriveConnected() && finalImg.startsWith("data:")) {
+      try {
+        const cleanName = `${bName}_${cName}_${Date.now()}.jpg`.replace(/[^a-zA-Z0-9._-]/g, "_");
+        finalImg = await uploadSwatchToDrive(cleanName, finalImg);
+      } catch (err) {
+        console.warn("Drive upload failed for single solid fabric:", err);
+      }
+    }
 
     if (editingSolidId) {
       // Edit Mode
@@ -433,31 +1250,53 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         item.id === editingSolidId
           ? {
               ...item,
-              name: fabricBrand.trim().toUpperCase(),
-              colorName: fabricColorName.trim().toUpperCase(),
+              name: bName,
+              colorName: cName,
               type: fabricType,
-              imageBase64: fabricImg || undefined,
+              imageBase64: finalImg,
             }
           : item
       );
       onSaveSettings({
         ...settings,
         solidFabricMaterials: updated,
-      });
+      }, true);
       setEditingSolidId(null);
     } else {
+      // Check for duplicate brand + color
+      const matchFound = findExistingSwatchMatch(
+        { id: "", name: bName, colorName: cName, type: fabricType },
+        list
+      );
+
+      if (matchFound) {
+        setSingleDuplicateConfirm({
+          isOpen: true,
+          existingItem: matchFound.match,
+          newItem: {
+            id: matchFound.match.id,
+            name: bName,
+            colorName: cName,
+            type: fabricType,
+            imageBase64: finalImg,
+          },
+          category: "solid",
+        });
+        return;
+      }
+
       // Create Mode
       const newItem: FabricMaterial = {
         id: generateId(),
-        name: fabricBrand.trim().toUpperCase(),
-        colorName: fabricColorName.trim().toUpperCase(),
+        name: bName,
+        colorName: cName,
         type: fabricType,
-        imageBase64: fabricImg || undefined,
+        imageBase64: finalImg,
       };
       onSaveSettings({
         ...settings,
         solidFabricMaterials: [...list, newItem],
-      });
+      }, true);
     }
 
     setFabricBrand("");
@@ -466,20 +1305,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setFabricImg("");
   };
 
-  const handleRemoveSolidFabric = (id: string) => {
-    const list = settings.solidFabricMaterials || [];
-    onSaveSettings({
-      ...settings,
-      solidFabricMaterials: list.filter((x) => x.id !== id),
-    });
+  const handleRemoveSolidFabric = async (id: string) => {
+    markItemDeleted(id);
+    if (onDeleteSingleMaterial) {
+      await onDeleteSingleMaterial("solidFabricMaterials", id);
+    } else {
+      const list = settings.solidFabricMaterials || [];
+      onSaveSettings({
+        ...settings,
+        solidFabricMaterials: list.filter((x) => x.id !== id),
+      }, true);
+    }
     if (editingSolidId === id) setEditingSolidId(null);
+    showToast("✓ ลบผ้าทึบเรียบร้อยแล้ว", "info");
   };
 
   // Sheer fabric operations
-  const handleAddSheerFabric = (e: React.FormEvent) => {
+  const handleAddSheerFabric = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!fabricBrand.trim() || !fabricColorName.trim()) return;
     const list = settings.sheerFabricMaterials || [];
+    const bName = fabricBrand.trim().toUpperCase();
+    const cName = fabricColorName.trim().toUpperCase();
+
+    let finalImg = fabricImg || undefined;
+    if (finalImg && isDriveConnected() && finalImg.startsWith("data:")) {
+      try {
+        const cleanName = `${bName}_${cName}_${Date.now()}.jpg`.replace(/[^a-zA-Z0-9._-]/g, "_");
+        finalImg = await uploadSwatchToDrive(cleanName, finalImg);
+      } catch (err) {
+        console.warn("Drive upload failed for single sheer fabric:", err);
+      }
+    }
 
     if (editingSheerId) {
       // Edit Mode
@@ -487,31 +1344,53 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         item.id === editingSheerId
           ? {
               ...item,
-              name: fabricBrand.trim().toUpperCase(),
-              colorName: fabricColorName.trim().toUpperCase(),
+              name: bName,
+              colorName: cName,
               type: "Sheer",
-              imageBase64: fabricImg || undefined,
+              imageBase64: finalImg,
             }
           : item
       );
       onSaveSettings({
         ...settings,
         sheerFabricMaterials: updated,
-      });
+      }, true);
       setEditingSheerId(null);
     } else {
+      // Check for duplicate brand + color
+      const matchFound = findExistingSwatchMatch(
+        { id: "", name: bName, colorName: cName, type: "Sheer" },
+        list
+      );
+
+      if (matchFound) {
+        setSingleDuplicateConfirm({
+          isOpen: true,
+          existingItem: matchFound.match,
+          newItem: {
+            id: matchFound.match.id,
+            name: bName,
+            colorName: cName,
+            type: "Sheer",
+            imageBase64: finalImg,
+          },
+          category: "sheer",
+        });
+        return;
+      }
+
       // Create Mode
       const newItem: FabricMaterial = {
         id: generateId(),
-        name: fabricBrand.trim().toUpperCase(),
-        colorName: fabricColorName.trim().toUpperCase(),
+        name: bName,
+        colorName: cName,
         type: "Sheer",
-        imageBase64: fabricImg || undefined,
+        imageBase64: finalImg,
       };
       onSaveSettings({
         ...settings,
         sheerFabricMaterials: [...list, newItem],
-      });
+      }, true);
     }
 
     setFabricBrand("");
@@ -519,37 +1398,88 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setFabricImg("");
   };
 
-  const handleRemoveSheerFabric = (id: string) => {
-    const list = settings.sheerFabricMaterials || [];
-    onSaveSettings({
-      ...settings,
-      sheerFabricMaterials: list.filter((x) => x.id !== id),
-    });
+  const handleRemoveSheerFabric = async (id: string) => {
+    markItemDeleted(id);
+    if (onDeleteSingleMaterial) {
+      await onDeleteSingleMaterial("sheerFabricMaterials", id);
+    } else {
+      const list = settings.sheerFabricMaterials || [];
+      onSaveSettings({
+        ...settings,
+        sheerFabricMaterials: list.filter((x) => x.id !== id),
+      }, true);
+    }
     if (editingSheerId === id) setEditingSheerId(null);
+    showToast("✓ ลบผ้าโปร่งเรียบร้อยแล้ว", "info");
   };
 
   // Blinds & Roller operations
-  const handleAddBlindMaterial = (e: React.FormEvent) => {
+  const handleAddBlindMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!blindName.trim() || !blindColorName.trim()) return;
 
     let blindMaterials = settings.blindMaterials || [];
     let rollerMaterials = settings.rollerMaterials || [];
     let blindTapeMaterials = settings.blindTapeMaterials || [];
+    const bName = blindName.trim().toUpperCase();
+    const cName = blindColorName.trim().toUpperCase();
+
+    let finalImg = blindImg || undefined;
+    if (finalImg && isDriveConnected() && finalImg.startsWith("data:")) {
+      try {
+        const cleanName = `${bName}_${cName}_${Date.now()}.jpg`.replace(/[^a-zA-Z0-9._-]/g, "_");
+        finalImg = await uploadSwatchToDrive(cleanName, finalImg);
+      } catch (err) {
+        console.warn("Drive upload failed for single blind material:", err);
+      }
+    }
 
     // If editing, first filter out the old item from whichever list it was in
     if (editingBlindId) {
       blindMaterials = blindMaterials.filter((x) => x.id !== editingBlindId);
       rollerMaterials = rollerMaterials.filter((x) => x.id !== editingBlindId);
       blindTapeMaterials = blindTapeMaterials.filter((x) => x.id !== editingBlindId);
+    } else {
+      // Check for duplicate in target group
+      let targetList = blindMaterials;
+      let targetKey: "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" = "blindMaterials";
+      if (blindType === "Roller Shades") {
+        targetList = rollerMaterials;
+        targetKey = "rollerMaterials";
+      } else if (blindType === "Fabric Tape") {
+        targetList = blindTapeMaterials;
+        targetKey = "blindTapeMaterials";
+      }
+
+      const matchFound = findExistingSwatchMatch(
+        { id: "", name: bName, colorName: cName, type: blindType },
+        targetList
+      );
+
+      if (matchFound) {
+        setSingleDuplicateConfirm({
+          isOpen: true,
+          existingItem: matchFound.match,
+          newItem: {
+            id: matchFound.match.id,
+            name: bName,
+            colorName: cName,
+            type: blindType,
+            imageBase64: finalImg,
+          },
+          category: "blinds",
+          blindTargetKey: targetKey,
+        });
+        return;
+      }
     }
 
     const newItem: FabricMaterial = {
       id: editingBlindId || generateId(),
-      name: blindName.trim().toUpperCase(),
-      colorName: blindColorName.trim().toUpperCase(),
+      name: bName,
+      colorName: cName,
       type: blindType,
-      imageBase64: blindImg || undefined,
+      imageBase64: finalImg,
     };
 
     if (blindType === "Wood Blinds" || blindType === "Aluminum Blinds") {
@@ -565,7 +1495,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       blindMaterials,
       rollerMaterials,
       blindTapeMaterials,
-    });
+    }, true);
 
     setEditingBlindId(null);
     setBlindName("");
@@ -573,18 +1503,153 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setBlindImg("");
   };
 
-  const handleRemoveBlindMaterial = (id: string, group: "blind" | "roller" | "tape") => {
-    if (group === "blind") {
-      const list = settings.blindMaterials || [];
-      onSaveSettings({ ...settings, blindMaterials: list.filter((x) => x.id !== id) });
-    } else if (group === "roller") {
-      const list = settings.rollerMaterials || [];
-      onSaveSettings({ ...settings, rollerMaterials: list.filter((x) => x.id !== id) });
-    } else if (group === "tape") {
-      const list = settings.blindTapeMaterials || [];
-      onSaveSettings({ ...settings, blindTapeMaterials: list.filter((x) => x.id !== id) });
+  const handleRemoveBlindMaterial = async (id: string, group: "blind" | "roller" | "tape") => {
+    markItemDeleted(id);
+    const key = group === "blind" ? "blindMaterials" : group === "roller" ? "rollerMaterials" : "blindTapeMaterials";
+    if (onDeleteSingleMaterial) {
+      await onDeleteSingleMaterial(key, id);
+    } else {
+      if (group === "blind") {
+        const list = settings.blindMaterials || [];
+        onSaveSettings({ ...settings, blindMaterials: list.filter((x) => x.id !== id) }, true);
+      } else if (group === "roller") {
+        const list = settings.rollerMaterials || [];
+        onSaveSettings({ ...settings, rollerMaterials: list.filter((x) => x.id !== id) }, true);
+      } else if (group === "tape") {
+        const list = settings.blindTapeMaterials || [];
+        onSaveSettings({ ...settings, blindTapeMaterials: list.filter((x) => x.id !== id) }, true);
+      }
     }
     if (editingBlindId === id) setEditingBlindId(null);
+    showToast("✓ ลบรายการเรียบร้อยแล้ว", "info");
+  };
+
+  const handleMoveBlindCategory = (
+    item: FabricMaterial,
+    fromGroup: "blind" | "roller" | "tape",
+    targetCategory: "Wood Blinds" | "Aluminum Blinds" | "Roller Shades" | "Fabric Tape"
+  ) => {
+    let blindMaterials = [...(settings.blindMaterials || [])];
+    let rollerMaterials = [...(settings.rollerMaterials || [])];
+    let blindTapeMaterials = [...(settings.blindTapeMaterials || [])];
+
+    // Remove from source
+    if (fromGroup === "blind") {
+      blindMaterials = blindMaterials.filter((x) => x.id !== item.id);
+    } else if (fromGroup === "roller") {
+      rollerMaterials = rollerMaterials.filter((x) => x.id !== item.id);
+    } else if (fromGroup === "tape") {
+      blindTapeMaterials = blindTapeMaterials.filter((x) => x.id !== item.id);
+    }
+
+    const updatedItem: FabricMaterial = {
+      ...item,
+      type: targetCategory,
+    };
+
+    // Add to target
+    if (targetCategory === "Wood Blinds" || targetCategory === "Aluminum Blinds") {
+      blindMaterials.push(updatedItem);
+    } else if (targetCategory === "Roller Shades") {
+      rollerMaterials.push(updatedItem);
+    } else if (targetCategory === "Fabric Tape") {
+      blindTapeMaterials.push(updatedItem);
+    }
+
+    onSaveSettings({
+      ...settings,
+      blindMaterials,
+      rollerMaterials,
+      blindTapeMaterials,
+    });
+
+    const categoryNames: Record<string, string> = {
+      "Wood Blinds": "มู่ลี่ไม้",
+      "Aluminum Blinds": "มู่ลี่อะลูมิเนียม",
+      "Roller Shades": "ม่านม้วน",
+      "Fabric Tape": "เทปผ้าตกแต่งมู่ลี่",
+    };
+    showToast(`ย้าย "${item.name} (${item.colorName})" ไปยังหมวด ${categoryNames[targetCategory]} เรียบร้อยแล้ว`, "success");
+  };
+
+  const handleAutoOrganizeBlinds = () => {
+    let blindMaterials = [...(settings.blindMaterials || [])];
+    let rollerMaterials = [...(settings.rollerMaterials || [])];
+    let blindTapeMaterials = [...(settings.blindTapeMaterials || [])];
+    let movedCount = 0;
+
+    // Check blindMaterials for roller shades or fabric tapes
+    const remainingBlinds: FabricMaterial[] = [];
+    for (const item of blindMaterials) {
+      const typeLower = (item.type || "").toLowerCase();
+      const nameLower = (item.name || "").toLowerCase();
+      const colorLower = (item.colorName || "").toLowerCase();
+
+      if (
+        typeLower === "roller shades" ||
+        nameLower.includes("ม่านม้วน") ||
+        nameLower.includes("roller") ||
+        colorLower.includes("ม่านม้วน") ||
+        colorLower.includes("roller")
+      ) {
+        rollerMaterials.push({ ...item, type: "Roller Shades" });
+        movedCount++;
+      } else if (
+        typeLower === "fabric tape" ||
+        nameLower.includes("เทป") ||
+        nameLower.includes("tape") ||
+        colorLower.includes("เทป") ||
+        colorLower.includes("tape")
+      ) {
+        blindTapeMaterials.push({ ...item, type: "Fabric Tape" });
+        movedCount++;
+      } else {
+        remainingBlinds.push(item);
+      }
+    }
+    blindMaterials = remainingBlinds;
+
+    // Check rollerMaterials for blinds or tapes
+    const remainingRollers: FabricMaterial[] = [];
+    for (const item of rollerMaterials) {
+      const typeLower = (item.type || "").toLowerCase();
+      const nameLower = (item.name || "").toLowerCase();
+      const colorLower = (item.colorName || "").toLowerCase();
+
+      if (
+        typeLower === "fabric tape" ||
+        nameLower.includes("เทป") ||
+        nameLower.includes("tape") ||
+        colorLower.includes("เทป") ||
+        colorLower.includes("tape")
+      ) {
+        blindTapeMaterials.push({ ...item, type: "Fabric Tape" });
+        movedCount++;
+      } else if (
+        typeLower === "wood blinds" ||
+        typeLower === "aluminum blinds" ||
+        nameLower.includes("มู่ลี่") ||
+        nameLower.includes("blind")
+      ) {
+        blindMaterials.push({ ...item, type: typeLower.includes("aluminum") ? "Aluminum Blinds" : "Wood Blinds" });
+        movedCount++;
+      } else {
+        remainingRollers.push(item);
+      }
+    }
+    rollerMaterials = remainingRollers;
+
+    if (movedCount > 0) {
+      onSaveSettings({
+        ...settings,
+        blindMaterials,
+        rollerMaterials,
+        blindTapeMaterials,
+      });
+      showToast(`จัดระเบียบสินค้าสำเร็จ! ย้ายรายการที่อยู่ผิดหมวด ${movedCount} รายการเรียบร้อยแล้ว`, "success");
+    } else {
+      showToast("หมวดหมู่สินค้าถูกต้องเรียบร้อยแล้ว ไม่มีรายการที่ต้องย้าย", "info");
+    }
   };
 
   // Tracks & Accessories CRUD Editor
@@ -614,12 +1679,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         updated.push({ id: generateId(), name: nameText.trim() });
       }
 
-      onSaveSettings({ ...settings, [fieldKey]: updated });
+      onSaveSettings({ ...settings, [fieldKey]: updated }, true);
       setNameText("");
+      showToast(editingId ? "✓ อัปเดตรายการเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)" : "✓ เพิ่มรายการเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)", "success");
     };
 
     const handleRemove = (id: string) => {
-      onSaveSettings({ ...settings, [fieldKey]: items.filter((x) => x.id !== id) });
+      onSaveSettings({ ...settings, [fieldKey]: items.filter((x) => x.id !== id) }, true);
+      showToast("✓ ลบรายการเรียบร้อยแล้ว", "info");
     };
 
     const handleEditStart = (item: { id: string; name: string }) => {
@@ -674,11 +1741,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 className="flex items-center justify-between bg-slate-50/50 hover:bg-slate-50 border border-slate-150 p-2.5 rounded-xl text-xs"
               >
                 <span className="font-semibold text-slate-700 leading-tight">{item.name}</span>
-                <div className="flex gap-1.5 shrink-0">
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openQuickEdit(fieldKey === "trackMaterials" ? "track" : "accessory", item, fieldKey)}
+                    className="text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-200/80 px-2 py-1 rounded-lg text-[10px] font-extrabold flex items-center gap-1 transition cursor-pointer shadow-2xs"
+                    title="⚡ แก้ไขข้อความด่วนทันใจ ไม่ต้องรอโหลด"
+                  >
+                    <Zap className="w-3 h-3 fill-amber-500 text-amber-500" />
+                    <span>แก้ด่วน</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => handleEditStart(item)}
                     className="text-slate-400 hover:text-indigo-600 p-1"
+                    title="แก้ไขข้อความ"
                   >
                     <Edit3 className="w-3.5 h-3.5" />
                   </button>
@@ -686,6 +1763,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     type="button"
                     onClick={() => handleRemove(item.id)}
                     className="text-slate-400 hover:text-rose-500 p-1"
+                    title="ลบรายการ"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
@@ -722,15 +1800,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         updated.push(trimmed);
       }
 
-      onSaveSettings({ ...settings, fabricTypes: updated });
+      onSaveSettings({ ...settings, fabricTypes: updated }, true);
       setNameText("");
+      showToast(editingIndex !== null ? "✓ อัปเดตคุณสมบัติผ้าเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)" : "✓ เพิ่มคุณสมบัติผ้าเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)", "success");
     };
 
     const handleRemove = (index: number) => {
       const typeToRemove = currentTypes[index];
       if (confirm(`คุณต้องการลบคุณสมบัติ "${typeToRemove}" ใช่หรือไม่? มีผลกับตัวเลือกข้อมูลผ้าม่าน`)) {
         const updated = currentTypes.filter((_, idx) => idx !== index);
-        onSaveSettings({ ...settings, fabricTypes: updated });
+        onSaveSettings({ ...settings, fabricTypes: updated }, true);
+        showToast("✓ ลบคุณสมบัติผ้าเรียบร้อยแล้ว", "info");
       }
     };
 
@@ -837,14 +1917,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         updated.push(trimmed);
       }
 
-      onSaveSettings({ ...settings, [fieldKey]: updated });
+      onSaveSettings({ ...settings, [fieldKey]: updated }, true);
       setNameText("");
+      showToast(editingIndex !== null ? "✓ อัปเดตตัวเลือกเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)" : "✓ เพิ่มตัวเลือกเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)", "success");
     };
 
     const handleRemove = (index: number) => {
       if (confirm(`คุณต้องการลบตัวเลือก "${items[index]}" ใช่หรือไม่?`)) {
         const updated = items.filter((_, idx) => idx !== index);
-        onSaveSettings({ ...settings, [fieldKey]: updated });
+        onSaveSettings({ ...settings, [fieldKey]: updated }, true);
+        showToast("✓ ลบตัวเลือกเรียบร้อยแล้ว", "info");
       }
     };
 
@@ -926,116 +2008,164 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div className="space-y-8 animate-fade-in">
-      {/* Upload/Save Progress Modal Overlay */}
-      {isSaving && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[9999] flex flex-col items-center justify-center p-6 text-white">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-8 max-w-sm w-full shadow-2xl text-center space-y-6">
+      {/* Unified High-Speed Upload & Save Progress Modal Overlay */}
+      {(isSaving || bulkUploadStatus?.active) && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[9999] flex flex-col items-center justify-center p-6 text-white animate-fade-in">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-7 max-w-md w-full shadow-2xl text-center space-y-5">
+            {/* Progress Badge */}
+            <div className="flex items-center justify-center gap-2">
+              {isDriveConnected() ? (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  จัดเก็บรูปภาพลง Google Drive
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/30">
+                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
+                  บันทึกลงฐานข้อมูลกลาง (Firestore & Local)
+                </span>
+              )}
+            </div>
+
+            {/* Spinner Wheel / Progress Ring */}
             <div className="relative w-24 h-24 mx-auto flex items-center justify-center">
-              {/* Spinner wheel */}
-              <div className="absolute inset-0 border-4 border-indigo-500/20 rounded-full"></div>
-              <div className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-              <span className="text-xl font-black text-indigo-400 font-mono">
+              <div className="absolute inset-0 border-4 border-slate-800 rounded-full"></div>
+              <div
+                className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"
+                style={{ animationDuration: "1s" }}
+              ></div>
+              <span className="text-2xl font-black text-indigo-400 font-mono">
                 {saveProgress !== null ? `${saveProgress}%` : "..."}
               </span>
             </div>
             
-            <div className="space-y-2">
-              <h3 className="text-lg font-extrabold text-white">กำลังอัปโหลดข้อมูลผ้าม่าน...</h3>
-              <p className="text-xs text-slate-400">
-                ระบบกำลังทำการบีบอัดและอัปโหลดรูปภาพสวอชผ้าไปยังคลาวด์เซิร์ฟเวอร์ กรุณาอย่าปิดหน้านี้
+            <div className="space-y-1.5">
+              <h3 className="text-lg font-extrabold text-white">
+                {bulkUploadStatus?.title ? `กำลังนำเข้า ${bulkUploadStatus.title}` : "กำลังบันทึกข้อมูลผ้าม่าน..."}
+              </h3>
+              <p className="text-xs text-slate-300">
+                {bulkUploadStatus?.phase === "processing" ? (
+                  <>ประมวลผลและอัปโหลดรูปภาพสวอช <strong>{bulkUploadStatus.current}</strong> จากทั้งหมด <strong>{bulkUploadStatus.total}</strong> รูป</>
+                ) : saveProgress === 100 ? (
+                  <span className="text-emerald-400 font-bold">บันทึกข้อมูลเสร็จสมบูรณ์ 100% เรียบร้อยแล้ว!</span>
+                ) : (
+                  <>กำลังจัดเก็บดัชนีแคตตาล็อกและสเปกผ้าลงระบบฐานข้อมูล...</>
+                )}
               </p>
             </div>
 
-            {saveProgress !== null && (
-              <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                <div 
-                  className="bg-indigo-500 h-full transition-all duration-300"
-                  style={{ width: `${saveProgress}%` }}
-                ></div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Clear List Confirmation Modal Overlay */}
-      {clearTarget && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[9999] flex flex-col items-center justify-center p-4">
-          <div className="bg-white text-slate-800 rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl border border-slate-100 space-y-6 animate-scale-in">
-            <div className="flex items-center gap-3 text-rose-600 bg-rose-50 p-4 rounded-2xl border border-rose-100">
-              <ShieldAlert className="w-8 h-8 shrink-0" />
-              <div>
-                <h3 className="text-base font-black">ยืนยันการล้างข้อมูล!</h3>
-                <p className="text-xs text-rose-700/80 mt-0.5 font-medium">
-                  การดำเนินการนี้จะลบรายการทั้งหมดอย่างถาวรและไม่สามารถย้อนกลับได้
-                </p>
-              </div>
+            {/* Progress bar */}
+            <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden p-0.5 border border-slate-700/50">
+              <div 
+                className="bg-gradient-to-r from-indigo-500 to-emerald-400 h-full rounded-full transition-all duration-300 ease-out"
+                style={{ width: `${Math.max(5, saveProgress || 0)}%` }}
+              ></div>
             </div>
 
-            <div className="space-y-2">
-              <p className="text-xs text-slate-500 font-bold">
-                รายการที่จะถูกลบ:{" "}
-                <span className="text-rose-600 bg-rose-50 px-2 py-0.5 rounded-lg text-xs font-black">
-                  {clearTarget === "solid" && "ผ้าม่านทึบ (Solid)"}
-                  {clearTarget === "sheer" && "ผ้าม่านโปร่ง (Sheer)"}
-                  {clearTarget === "blind" && "มู่ลี่ (Wood & Aluminum)"}
-                  {clearTarget === "roller" && "ม่านม้วน (Roller Shades)"}
-                </span>
-              </p>
-              <p className="text-xs text-slate-400 font-medium leading-relaxed">
-                เพื่อความปลอดภัย กรุณาพิมพ์คำว่า <span className="text-rose-600 font-black font-mono bg-rose-50 px-1.5 py-0.5 rounded">CONFIRM</span> ในช่องด้านล่างเพื่อดำเนินการต่อ
-              </p>
-            </div>
-
-            <div>
-              <input
-                type="text"
-                autoFocus
-                value={clearConfirmInput}
-                onChange={(e) => setClearConfirmInput(e.target.value)}
-                placeholder="พิมพ์ CONFIRM"
-                className="w-full bg-slate-50 border border-slate-250 text-slate-800 text-center text-sm font-bold font-mono uppercase tracking-wider rounded-xl px-4 py-3 focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none transition"
-              />
-            </div>
-
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  setClearTarget(null);
-                  setClearConfirmInput("");
-                }}
-                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-3 rounded-xl transition cursor-pointer text-center"
-              >
-                ยกเลิก
-              </button>
-              <button
-                type="button"
-                disabled={clearConfirmInput.trim() !== "CONFIRM"}
-                onClick={handleClearList}
-                className={`flex-1 text-white text-xs font-bold py-3 rounded-xl transition text-center cursor-pointer flex items-center justify-center gap-1.5 ${
-                  clearConfirmInput.trim() === "CONFIRM"
-                    ? "bg-rose-600 hover:bg-rose-700 shadow-lg shadow-rose-600/15"
-                    : "bg-slate-300 cursor-not-allowed text-white/70"
-                }`}
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>ยืนยันการล้างข้อมูล</span>
-              </button>
-            </div>
+            <p className="text-[10px] text-slate-400">
+              {isDriveConnected() 
+                ? "รูปภาพสวอชจะถูกส่งตรงไปเก็บในโฟลเดอร์ Curtain_Studio_Swatches บน Google Drive ของคุณ" 
+                : "ประมวลผลด้วยความเร็วสูงและบันทึกฐานข้อมูลพร้อมใช้งานทันที"}
+            </p>
           </div>
         </div>
       )}
 
       {/* Intro section */}
-      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-6 md:p-8 text-white shadow-xl shadow-indigo-950/10">
-        <h2 className="text-2xl md:text-3xl font-black tracking-tight">
-          ตั้งค่าการทำงานและฐานข้อมูลกลาง
-        </h2>
-        <p className="text-sm text-indigo-200 mt-2 max-w-3xl leading-relaxed font-medium">
-          ระบบบริหารข้อมูลผ้าม่านพรีเมียม สเปกสีลายถัก สวอชมู่ลี่ไม้ ม่านม้วน รางม่าน อุปกรณ์ติดตั้ง 
-          และจัดการสิทธิ์นักออกแบบเพื่อให้โควต้าประมวลผลรูปจำลองด้วย AI ทำงานได้ดีที่สุด
-        </p>
+      <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-6 md:p-8 text-white shadow-xl shadow-indigo-950/10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+        <div>
+          <h2 className="text-2xl md:text-3xl font-black tracking-tight">
+            ตั้งค่าการทำงานและฐานข้อมูลกลาง
+          </h2>
+          <p className="text-sm text-indigo-200 mt-2 max-w-3xl leading-relaxed font-medium">
+            ระบบบริหารข้อมูลผ้าม่านพรีเมียม สเปกสีลายถัก สวอชมู่ลี่ไม้ ม่านม้วน รางม่าน อุปกรณ์ติดตั้ง 
+            และจัดการสิทธิ์นักออกแบบเพื่อให้โควต้าประมวลผลรูปจำลองด้วย AI ทำงานได้ดีที่สุด
+          </p>
+        </div>
+        <div className="shrink-0 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleDeduplicateAllMaterials}
+            className="px-4 py-2.5 rounded-xl bg-indigo-500/20 hover:bg-indigo-600 border border-indigo-400/40 text-indigo-100 hover:text-white text-xs font-extrabold transition flex items-center gap-2 shadow-lg shadow-indigo-950/20 cursor-pointer"
+            title="ค้นหาและล้างรายการที่มีชื่อแบรนด์และรหัสสีซ้ำกันในแคตตาล็อก"
+          >
+            <Sparkles className="w-4 h-4 text-indigo-300" />
+            <span>ตรวจสอบและลบรายการซ้ำ</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setClearTarget("all_materials")}
+            className="px-4 py-2.5 rounded-xl bg-rose-500/20 hover:bg-rose-600 border border-rose-500/40 text-rose-200 hover:text-white text-xs font-extrabold transition flex items-center gap-2 shadow-lg shadow-rose-950/20 cursor-pointer"
+            title="ล้างข้อมูลและสวอชในแคตตาล็อกทั้งหมด"
+          >
+            <Trash2 className="w-4 h-4 text-rose-400" />
+            <span>ล้างแคตตาล็อกวัสดุทั้งหมด</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Google Drive Cloud Swatch Storage Status Card */}
+      <div className="bg-gradient-to-br from-emerald-950/90 via-slate-900 to-slate-950 border border-emerald-500/30 rounded-3xl p-5 md:p-6 text-white shadow-xl shadow-emerald-950/20">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="flex items-start gap-4">
+            <div className="p-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-2xl shrink-0">
+              <HardDrive className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-extrabold text-base text-emerald-100">
+                  Google Drive Cloud Swatch Storage
+                </h3>
+                {driveConnected ? (
+                  <span className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                    <Check className="w-3 h-3" />
+                    <span>เชื่อมต่อแล้ว (บันทึกรูปถาวรบน Google Drive)</span>
+                  </span>
+                ) : (
+                  <span className="bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                    <span>ยังไม่ได้เชื่อมต่อบัญชี Google</span>
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
+                {driveConnected
+                  ? "รูปภาพสวอชผ้า มู่ลี่ และม่านม้วนที่อัปโหลดจะถูกส่งไปเก็บไว้ในโฟลเดอร์ Curtain_Studio_Swatches บน Google Drive ของคุณโดยอัตโนมัติ ไม่เปลืองโควต้า Firestore และไม่หายแน่นอน 100%"
+                  : "เชื่อมต่อ Google Drive เพื่อเก็บรูปสวอชผ้าและมู่ลี่ขนาดเต็มไว้บน Cloud ฟรีของคุณอย่างถาวร ป้องกันปัญหารูปหายหรือโควต้า Firebase เต็ม"}
+              </p>
+            </div>
+          </div>
+
+          <div className="shrink-0 self-end md:self-auto flex items-center gap-2">
+            {driveConnected ? (
+              <button
+                type="button"
+                onClick={handleDisconnectDrive}
+                className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-rose-500/20 text-slate-300 hover:text-rose-200 border border-white/10 hover:border-rose-500/30 text-xs font-bold transition cursor-pointer"
+              >
+                ยกเลิกการเชื่อมต่อ
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleConnectDrive}
+                disabled={isConnectingDrive}
+                className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xs transition inline-flex items-center gap-1.5 shadow-lg shadow-emerald-500/25 cursor-pointer disabled:opacity-50"
+              >
+                {isConnectingDrive ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>กำลังเชื่อมต่อ...</span>
+                  </>
+                ) : (
+                  <>
+                    <HardDrive className="w-4 h-4" />
+                    <span>เชื่อมต่อ Google Drive ตอนนี้</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Tabs list */}
@@ -1317,6 +2447,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
+                            onClick={() => openQuickEdit("employee", emp, "employees")}
+                            className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-2 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                            title="แก้ไขข้อความด่วน (⚡ ทันใจไม่ต้องโหลด)"
+                          >
+                            <Zap className="w-3.5 h-3.5 fill-indigo-600" />
+                            <span>แก้ด่วน</span>
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => {
                               setEditingEmployeeId(emp.id);
                               setNewEmpName(emp.name);
@@ -1325,8 +2464,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               setNewEmpRole(emp.role || "designer");
                               setNewEmpQuota(emp.aiQuota || 30);
                             }}
-                            className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
-                            title="แก้ไขข้อมูลพนักงาน"
+                            className="text-slate-400 hover:text-indigo-600 hover:bg-slate-100 p-2 rounded-xl transition cursor-pointer"
+                            title="แก้ไขข้อมูลพนักงานในฟอร์ม"
                           >
                             <Edit3 className="w-4 h-4" />
                           </button>
@@ -1488,9 +2627,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm">
-              <h3 className="text-base font-bold text-slate-800 mb-3">
-                รายการสเปกรูปแบบผ้าม่าน & มู่ลี่ทั้งหมด ({(settings.styleMaterials || []).length})
-              </h3>
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="text-base font-bold text-slate-800">
+                  รายการสเปกรูปแบบผ้าม่าน & มู่ลี่ทั้งหมด ({(settings.styleMaterials || []).length})
+                </h3>
+                {(settings.styleMaterials || []).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setClearTarget("styles")}
+                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>ล้างทั้งหมด</span>
+                  </button>
+                )}
+              </div>
               <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
                 {(settings.styleMaterials || []).map((item) => (
                   <div
@@ -1523,6 +2674,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
+                        onClick={() => openQuickEdit("style", item, "styleMaterials")}
+                        className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-2 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                        title="แก้ไขข้อความด่วน (⚡ ทันใจไม่ต้องโหลด)"
+                      >
+                        <Zap className="w-3.5 h-3.5 fill-indigo-600" />
+                        <span>แก้ด่วน</span>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => {
                           setEditingStyleId(item.id);
                           setNewStyleName(item.name);
@@ -1531,8 +2691,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           setNewStyleImg(item.imageBase64 || "");
                           setNewStyleEnForAi(item.styleEnForAi || "");
                         }}
-                        className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
-                        title="แก้ไขสเปกนี้"
+                        className="text-slate-400 hover:text-indigo-600 hover:bg-slate-100 p-2 rounded-xl transition cursor-pointer"
+                        title="แก้ไขสเปกนี้ในฟอร์ม"
                       >
                         <Edit3 className="w-4 h-4" />
                       </button>
@@ -1627,9 +2787,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm">
-              <h3 className="text-base font-bold text-slate-800 mb-3">
-                รายการระยะชายม่านในระบบ ({(settings.hemMaterials || []).length})
-              </h3>
+              <div className="flex justify-between items-center mb-3">
+                <h3 className="text-base font-bold text-slate-800">
+                  รายการระยะชายม่านในระบบ ({(settings.hemMaterials || []).length})
+                </h3>
+                {(settings.hemMaterials || []).length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setClearTarget("hems")}
+                    className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>ล้างทั้งหมด</span>
+                  </button>
+                )}
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[480px] overflow-y-auto pr-1">
                 {(settings.hemMaterials || []).map((item) => (
                   <div
@@ -1647,13 +2819,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <div className="flex items-center gap-1 shrink-0">
                       <button
                         type="button"
+                        onClick={() => openQuickEdit("hem", item, "hemMaterials")}
+                        className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-2 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                        title="แก้ไขข้อความด่วน (⚡ ทันใจไม่ต้องโหลด)"
+                      >
+                        <Zap className="w-3.5 h-3.5 fill-indigo-600" />
+                        <span>แก้ด่วน</span>
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => {
                           setEditingHemId(item.id);
                           setNewHemName(item.name);
                           setNewHemImg(item.imageBase64 || "");
                         }}
-                        className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
-                        title="แก้ไขระยะนี้"
+                        className="text-slate-400 hover:text-indigo-600 hover:bg-slate-100 p-2 rounded-xl transition cursor-pointer"
+                        title="แก้ไขระยะนี้ในฟอร์ม"
                       >
                         <Edit3 className="w-4 h-4" />
                       </button>
@@ -1789,6 +2970,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <p className="text-[10px] text-slate-400 leading-relaxed">
                   เลือกโฟลเดอร์จากคอมพิวเตอร์ ระบบจะดึง <strong>ชื่อโฟลเดอร์เป็นชื่อผ้า</strong> และ <strong>ชื่อไฟล์เป็นชื่อสีผ้า</strong> ทันที สะดวกและรวดเร็ว
                 </p>
+                <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl px-2.5 py-1.5 flex items-center gap-2 text-[10px] text-indigo-800">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <span><strong>ระบบป้องกันข้อมูลซ้ำ:</strong> อัปเดตสวอชเดิมอัตโนมัติหากชื่อผ้าและรหัสสีตรงกัน ไม่เกิดรายการซ้ำซ้อน</span>
+                </div>
 
                 <div>
                   <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
@@ -1835,20 +3020,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             {(() => {
+              const solidBatches = getBatchSummaries(settings.solidFabricMaterials || []);
               const filteredSolidFabrics = (settings.solidFabricMaterials || []).filter((item) => {
+                if (batchFilterSolid && batchFilterSolid !== "all") {
+                  if (batchFilterSolid === "legacy_manual") {
+                    if (item.uploadBatchId) return false;
+                  } else if (item.uploadBatchId !== batchFilterSolid) {
+                    return false;
+                  }
+                }
                 const q = solidSearch.trim().toLowerCase();
                 if (!q) return true;
                 return (
                   (item.name || "").toLowerCase().includes(q) ||
                   (item.colorName || "").toLowerCase().includes(q) ||
-                  (item.type || "").toLowerCase().includes(q)
+                  (item.type || "").toLowerCase().includes(q) ||
+                  (item.uploadBatchName || "").toLowerCase().includes(q)
                 );
               });
 
               return (
                 <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex flex-col h-full">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4 shrink-0">
-                    <div className="flex items-center gap-3">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-3 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2">
                       <h3 className="text-base font-bold text-slate-800">
                         รายการผ้าม่านทึบแสง ({filteredSolidFabrics.length} / {(settings.solidFabricMaterials || []).length} สีแบบ)
                       </h3>
@@ -1857,26 +3051,91 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           type="button"
                           onClick={() => {
                             setClearTarget("solid");
+                            setClearModalTab("batches");
                             setClearConfirmInput("");
                           }}
-                          className="text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1 transition cursor-pointer"
+                          className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-[10px] font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition cursor-pointer border border-indigo-100"
+                          title="เลือกลบเฉพาะรอบการอัปโหลดหรือล้างทั้งหมด"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>ล้างข้อมูล</span>
+                          <Layers className="w-3.5 h-3.5" />
+                          <span>จัดการรอบ / ล้างข้อมูล</span>
                         </button>
                       )}
                     </div>
-                    <div className="relative w-full md:w-64">
-                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      <input
-                        type="text"
-                        value={solidSearch}
-                        onChange={(e) => setSolidSearch(e.target.value)}
-                        placeholder="ค้นหาชื่อผ้า, สี หรือประเภท..."
-                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl pl-9 pr-4 py-2 focus:ring-2 focus:ring-indigo-500/20 outline-none transition"
-                      />
+
+                    <div className="flex items-center gap-2 w-full md:w-auto">
+                      {solidBatches.length > 1 && (
+                        <div className="relative">
+                          <select
+                            value={batchFilterSolid}
+                            onChange={(e) => setBatchFilterSolid(e.target.value)}
+                            className="bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-xl px-2.5 py-2 font-bold focus:ring-2 focus:ring-indigo-500/20 outline-none max-w-[170px] truncate cursor-pointer"
+                          >
+                            <option value="all">📦 ทุกล็อต ({solidBatches.length} รอบ)</option>
+                            {solidBatches.map((b) => (
+                              <option key={b.batchId} value={b.batchId}>
+                                {b.batchName} ({b.count})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      <div className="relative flex-1 md:w-52">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={solidSearch}
+                          onChange={(e) => setSolidSearch(e.target.value)}
+                          placeholder="ค้นหาชื่อผ้า, สี, รอบ..."
+                          className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl pl-9 pr-4 py-2 focus:ring-2 focus:ring-indigo-500/20 outline-none transition"
+                        />
+                      </div>
                     </div>
                   </div>
+
+                  {/* Active Batch Filter Banner */}
+                  {batchFilterSolid && batchFilterSolid !== "all" && (
+                    <div className="bg-amber-50/90 border border-amber-200 rounded-xl px-3.5 py-2 flex items-center justify-between gap-3 text-xs mb-3 animate-in fade-in duration-150 shrink-0">
+                      <div className="flex items-center gap-2 text-amber-900 font-bold min-w-0">
+                        <Layers className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span className="truncate">
+                          กำลังกรองเฉพาะ:{" "}
+                          <strong className="text-slate-900">
+                            {solidBatches.find((b) => b.batchId === batchFilterSolid)?.batchName || "รอบที่เลือก"}
+                          </strong>{" "}
+                          ({filteredSolidFabrics.length} รายการ)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const b = solidBatches.find((x) => x.batchId === batchFilterSolid);
+                            if (b) {
+                              setBatchConfirmDeleteState({
+                                targetCategory: "solid",
+                                batchId: b.batchId,
+                                batchName: b.batchName,
+                                count: b.count,
+                              });
+                            }
+                          }}
+                          className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] px-2.5 py-1 rounded-lg flex items-center gap-1 shadow-sm transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>ล้างเฉพาะรอบนี้</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBatchFilterSolid("all")}
+                          className="text-slate-500 hover:text-slate-700 text-[11px] font-bold px-1.5 py-1 cursor-pointer"
+                        >
+                          แสดงทั้งหมด
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
                     {filteredSolidFabrics.map((item) => (
                       <div
@@ -1893,17 +3152,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <span className="font-extrabold text-slate-800 text-xs">
                               {item.name}
                             </span>
                             <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tight bg-slate-200/80 text-slate-700">
                               {item.type}
                             </span>
+                            {item.uploadBatchName && (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100/60 truncate max-w-[130px]" title={`รอบ: ${item.uploadBatchName}`}>
+                                {item.uploadBatchName}
+                              </span>
+                            )}
                           </div>
                           <p className="text-[11px] text-indigo-600 font-bold mt-0.5">สีผ้า: {item.colorName}</p>
                         </div>
                         <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openQuickEdit("solid", item, "solidFabricMaterials")}
+                            className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-2 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                            title="แก้ไขข้อความด่วน (⚡ ทันใจไม่ต้องโหลด)"
+                          >
+                            <Zap className="w-3.5 h-3.5 fill-indigo-600" />
+                            <span>แก้ด่วน</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => {
@@ -1913,8 +3186,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               setFabricType(item.type);
                               setFabricImg(item.imageBase64 || "");
                             }}
-                            className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
-                            title="แก้ไขสีแบบนี้"
+                            className="text-slate-400 hover:text-indigo-600 hover:bg-slate-100 p-2 rounded-xl transition cursor-pointer"
+                            title="แก้ไขรูปภาพหรือสวอชในฟอร์ม"
                           >
                             <Edit3 className="w-4 h-4" />
                           </button>
@@ -2028,14 +3301,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
 
               {/* Folder Import Module */}
-              <div className="border-t border-slate-100 pt-5">
+              <div className="border-t border-slate-100 pt-5 space-y-3">
                 <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mb-2">
                   <FolderUp className="w-4 h-4 text-indigo-500" />
                   <span>อัปโหลดข้อมูลโปร่งแบบโฟลเดอร์ (Bulk Folder Import)</span>
                 </h4>
-                <p className="text-[10px] text-slate-400 mb-3 leading-relaxed">
+                <p className="text-[10px] text-slate-400 leading-relaxed">
                   เลือกโฟลเดอร์ผ้าโปร่งจากเครื่องคอมพิวเตอร์ ระบบจะใช้ <strong>ชื่อโฟลเดอร์เป็นชื่อผ้า</strong> และ <strong>ชื่อไฟล์เป็นสีผ้าโปร่ง</strong>
                 </p>
+                <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl px-2.5 py-1.5 flex items-center gap-2 text-[10px] text-indigo-800">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                  <span><strong>ระบบป้องกันข้อมูลซ้ำ:</strong> อัปเดตสวอชเดิมอัตโนมัติหากชื่อผ้าและรหัสสีตรงกัน ไม่เกิดรายการซ้ำซ้อน</span>
+                </div>
                 <div className="flex gap-2">
                   <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-indigo-50/30 flex-1">
                     <input
@@ -2066,20 +3343,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
 
             {(() => {
+              const sheerBatches = getBatchSummaries(settings.sheerFabricMaterials || []);
               const filteredSheerFabrics = (settings.sheerFabricMaterials || []).filter((item) => {
+                if (batchFilterSheer && batchFilterSheer !== "all") {
+                  if (batchFilterSheer === "legacy_manual") {
+                    if (item.uploadBatchId) return false;
+                  } else if (item.uploadBatchId !== batchFilterSheer) {
+                    return false;
+                  }
+                }
                 const q = sheerSearch.trim().toLowerCase();
                 if (!q) return true;
                 return (
                   (item.name || "").toLowerCase().includes(q) ||
                   (item.colorName || "").toLowerCase().includes(q) ||
-                  (item.type || "").toLowerCase().includes(q)
+                  (item.type || "").toLowerCase().includes(q) ||
+                  (item.uploadBatchName || "").toLowerCase().includes(q)
                 );
               });
 
               return (
                 <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200/80 p-6 shadow-sm flex flex-col h-full">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4 shrink-0">
-                    <div className="flex items-center gap-3">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-3 shrink-0">
+                    <div className="flex flex-wrap items-center gap-2">
                       <h3 className="text-base font-bold text-slate-800">
                         รายการผ้าม่านโปร่งแสง ({filteredSheerFabrics.length} / {(settings.sheerFabricMaterials || []).length} สีแบบ)
                       </h3>
@@ -2088,26 +3374,91 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           type="button"
                           onClick={() => {
                             setClearTarget("sheer");
+                            setClearModalTab("batches");
                             setClearConfirmInput("");
                           }}
-                          className="text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1 transition cursor-pointer"
+                          className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 text-[10px] font-bold px-2.5 py-1 rounded-lg flex items-center gap-1.5 transition cursor-pointer border border-indigo-100"
+                          title="เลือกลบเฉพาะรอบการอัปโหลดหรือล้างทั้งหมด"
                         >
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>ล้างข้อมูล</span>
+                          <Layers className="w-3.5 h-3.5" />
+                          <span>จัดการรอบ / ล้างข้อมูล</span>
                         </button>
                       )}
                     </div>
-                    <div className="relative w-full md:w-64">
-                      <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      <input
-                        type="text"
-                        value={sheerSearch}
-                        onChange={(e) => setSheerSearch(e.target.value)}
-                        placeholder="ค้นหาชื่อผ้า, สี หรือประเภท..."
-                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl pl-9 pr-4 py-2 focus:ring-2 focus:ring-indigo-500/20 outline-none transition"
-                      />
+
+                    <div className="flex items-center gap-2 w-full md:w-auto">
+                      {sheerBatches.length > 1 && (
+                        <div className="relative">
+                          <select
+                            value={batchFilterSheer}
+                            onChange={(e) => setBatchFilterSheer(e.target.value)}
+                            className="bg-slate-50 border border-slate-200 text-slate-700 text-xs rounded-xl px-2.5 py-2 font-bold focus:ring-2 focus:ring-indigo-500/20 outline-none max-w-[170px] truncate cursor-pointer"
+                          >
+                            <option value="all">📦 ทุกล็อต ({sheerBatches.length} รอบ)</option>
+                            {sheerBatches.map((b) => (
+                              <option key={b.batchId} value={b.batchId}>
+                                {b.batchName} ({b.count})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      <div className="relative flex-1 md:w-52">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        <input
+                          type="text"
+                          value={sheerSearch}
+                          onChange={(e) => setSheerSearch(e.target.value)}
+                          placeholder="ค้นหาชื่อผ้า, สี, รอบ..."
+                          className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl pl-9 pr-4 py-2 focus:ring-2 focus:ring-indigo-500/20 outline-none transition"
+                        />
+                      </div>
                     </div>
                   </div>
+
+                  {/* Active Batch Filter Banner */}
+                  {batchFilterSheer && batchFilterSheer !== "all" && (
+                    <div className="bg-amber-50/90 border border-amber-200 rounded-xl px-3.5 py-2 flex items-center justify-between gap-3 text-xs mb-3 animate-in fade-in duration-150 shrink-0">
+                      <div className="flex items-center gap-2 text-amber-900 font-bold min-w-0">
+                        <Layers className="w-4 h-4 text-amber-600 shrink-0" />
+                        <span className="truncate">
+                          กำลังกรองเฉพาะ:{" "}
+                          <strong className="text-slate-900">
+                            {sheerBatches.find((b) => b.batchId === batchFilterSheer)?.batchName || "รอบที่เลือก"}
+                          </strong>{" "}
+                          ({filteredSheerFabrics.length} รายการ)
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const b = sheerBatches.find((x) => x.batchId === batchFilterSheer);
+                            if (b) {
+                              setBatchConfirmDeleteState({
+                                targetCategory: "sheer",
+                                batchId: b.batchId,
+                                batchName: b.batchName,
+                                count: b.count,
+                              });
+                            }
+                          }}
+                          className="bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] px-2.5 py-1 rounded-lg flex items-center gap-1 shadow-sm transition cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                          <span>ล้างเฉพาะรอบนี้</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setBatchFilterSheer("all")}
+                          className="text-slate-500 hover:text-slate-700 text-[11px] font-bold px-1.5 py-1 cursor-pointer"
+                        >
+                          แสดงทั้งหมด
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
                     {filteredSheerFabrics.map((item) => (
                       <div
@@ -2124,17 +3475,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                           )}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5">
                             <span className="font-extrabold text-slate-800 text-xs">
                               {item.name}
                             </span>
                             <span className="px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-tight bg-slate-200/80 text-slate-700">
                               {item.type}
                             </span>
+                            {item.uploadBatchName && (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-100/60 truncate max-w-[130px]" title={`รอบ: ${item.uploadBatchName}`}>
+                                {item.uploadBatchName}
+                              </span>
+                            )}
                           </div>
                           <p className="text-[11px] text-indigo-600 font-bold mt-0.5">สีผ้า: {item.colorName}</p>
                         </div>
                         <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => openQuickEdit("sheer", item, "sheerFabricMaterials")}
+                            className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-2 rounded-xl transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                            title="แก้ไขข้อความด่วน (⚡ ทันใจไม่ต้องโหลด)"
+                          >
+                            <Zap className="w-3.5 h-3.5 fill-indigo-600" />
+                            <span>แก้ด่วน</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => {
@@ -2143,8 +3508,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                               setFabricColorName(item.colorName);
                               setFabricImg(item.imageBase64 || "");
                             }}
-                            className="text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-xl transition cursor-pointer"
-                            title="แก้ไขสีแบบนี้"
+                            className="text-slate-400 hover:text-indigo-600 hover:bg-slate-100 p-2 rounded-xl transition cursor-pointer"
+                            title="แก้ไขรูปภาพหรือสวอชในฟอร์ม"
                           >
                             <Edit3 className="w-4 h-4" />
                           </button>
@@ -2176,7 +3541,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <span>{editingBlindId ? "แก้ไขวัสดุมู่ลี่ & ม่านม้วน" : "เพิ่มวัสดุมู่ลี่ & ม่านม้วน"}</span>
                 </h3>
                 <p className="text-xs text-slate-400 mb-4">กำหนดสเปกสำหรับมู่ลี่อลูมิเนียม มู่ลี่ไม้ เทปผ้า และม่านม้วน</p>
- 
+
                 <form onSubmit={handleAddBlindMaterial} className="space-y-3.5">
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -2206,7 +3571,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </div>
                   </div>
- 
+
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                       ประเภทสินค้าเฉพาะกลุ่ม
@@ -2222,7 +3587,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <option value="Fabric Tape">เทปผ้าสำหรับมู่ลี่ (Fabric Tape for Blinds)</option>
                     </select>
                   </div>
- 
+
                   <div>
                     <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">
                       รูปภาพจริงเนื้อวัสดุสวอช (Real Photo Swatch ONLY)
@@ -2246,7 +3611,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       />
                     </div>
                   </div>
- 
+
                   <div className="flex gap-2">
                     <button
                       type="submit"
@@ -2272,13 +3637,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </div>
                 </form>
               </div>
- 
+
               {/* Directory import for blinds */}
-              <div className="border-t border-slate-100 pt-5">
-                <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mb-2">
-                  <FolderUp className="w-4 h-4 text-indigo-500" />
-                  <span>นำเข้าสวอชมู่ลี่เป็นโฟลเดอร์ (Bulk Folder Import)</span>
-                </h4>
+              <div className="border-t border-slate-100 pt-5 space-y-3">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mb-1">
+                    <FolderUp className="w-4 h-4 text-indigo-500" />
+                    <span>นำเข้าสวอชเป็นโฟลเดอร์/หลายไฟล์ (Bulk Import)</span>
+                  </h4>
+                  <p className="text-[10px] text-slate-500 mb-2">เลือกประเภทสินค้าที่ต้องการก่อนกดเลือกไฟล์หรือโฟลเดอร์</p>
+                  <div className="bg-indigo-50/70 border border-indigo-100 rounded-xl px-2.5 py-1.5 flex items-center gap-2 text-[10px] text-indigo-800">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                    <span><strong>ระบบป้องกันข้อมูลซ้ำ:</strong> อัปเดตสวอชเดิมอัตโนมัติหากชื่อและรหัสสีตรงกัน ไม่เกิดรายการซ้ำซ้อน</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                    เลือกหมวดหมู่สินค้าเฉพาะกลุ่มสำหรับไฟล์ที่จะนำเข้า:
+                  </label>
+                  <select
+                    value={folderUploadBlindType}
+                    onChange={(e) => setFolderUploadBlindType(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3 py-2 focus:ring-2 focus:ring-indigo-500/20 outline-none cursor-pointer"
+                  >
+                    <option value="Wood Blinds">มู่ลี่ไม้ (Wood Blinds)</option>
+                    <option value="Aluminum Blinds">มู่ลี่อะลูมิเนียม (Aluminum Blinds)</option>
+                    <option value="Roller Shades">ม่านม้วน (Roller Shades)</option>
+                    <option value="Fabric Tape">เทปผ้าสำหรับมู่ลี่ (Fabric Tape for Blinds)</option>
+                  </select>
+                </div>
+
                 <div className="flex gap-2">
                   <div className="relative border border-dashed border-slate-300 bg-slate-50/50 rounded-xl p-3 text-center transition hover:bg-indigo-50/30 flex-1">
                     <input
@@ -2307,8 +3696,31 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               </div>
             </div>
- 
-            <div className="lg:col-span-2 space-y-8 max-h-[650px] overflow-y-auto pr-1">
+
+            <div className="lg:col-span-2 space-y-6 max-h-[650px] overflow-y-auto pr-1">
+              {/* Auto-Organize Banner */}
+              <div className="bg-indigo-50/80 border border-indigo-100 rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h5 className="text-xs font-bold text-indigo-950">ตัวช่วยจัดระเบียบหมวดหมู่สินค้า</h5>
+                    <p className="text-[10px] text-indigo-700 leading-tight">
+                      หากเคยนำเข้ารูปม่านม้วนหรือเทปผ้าแล้วรูปไปปนในมู่ลี่ไม้ กดปุ่มนี้เพื่อแยกหมวดหมู่อัตโนมัติทันที
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAutoOrganizeBlinds}
+                  className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-xl transition flex items-center justify-center gap-1.5 shadow-sm shrink-0 cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>จัดระเบียบหมวดหมู่อัตโนมัติ</span>
+                </button>
+              </div>
+
               {/* Wood & Aluminum Blinds List */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm">
                 <h4 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider mb-3 flex items-center justify-between border-b border-slate-100 pb-2">
@@ -2333,16 +3745,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {(settings.blindMaterials || []).map((item) => (
                     <div key={item.id} className="flex items-center justify-between bg-slate-50 border border-slate-150 p-2.5 rounded-xl text-xs">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
                         <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
                           {item.imageBase64 && <img src={item.imageBase64} alt="" className="w-full h-full object-cover" />}
                         </div>
-                        <div>
-                          <p className="font-bold text-slate-800 truncate max-w-[110px]">{item.name}</p>
-                          <p className="text-[10px] text-indigo-600 font-bold mt-0.5">{item.colorName}</p>
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-800 truncate max-w-[100px]">{item.name}</p>
+                          <p className="text-[10px] text-indigo-600 font-bold mt-0.5 truncate max-w-[100px]">{item.colorName}</p>
+                          <span className="inline-block text-[9px] font-semibold text-slate-500 bg-slate-200/70 px-1.5 py-0.2 rounded mt-0.5">
+                            {item.type === "Aluminum Blinds" ? "มู่ลี่อะลูมิเนียม" : "มู่ลี่ไม้"}
+                          </span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-0.5">
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Quick Category Switcher */}
+                        <select
+                          value={item.type || "Wood Blinds"}
+                          onChange={(e) => handleMoveBlindCategory(item, "blind", e.target.value as any)}
+                          title="ย้ายไปยังหมวดหมู่อื่น"
+                          className="text-[10px] bg-white border border-slate-200 rounded-lg px-1 py-1 text-slate-600 font-bold focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
+                        >
+                          <option value="Wood Blinds">มู่ลี่ไม้</option>
+                          <option value="Aluminum Blinds">มู่ลี่อะลูมิเนียม</option>
+                          <option value="Roller Shades">ม่านม้วน</option>
+                          <option value="Fabric Tape">เทปผ้า</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => openQuickEdit("blind", item, "blindMaterials")}
+                          className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-1.5 rounded-lg transition cursor-pointer flex items-center gap-0.5 text-[10px] font-bold"
+                          title="แก้ไขข้อความด่วน (⚡ ทันใจไม่ต้องโหลด)"
+                        >
+                          <Zap className="w-3 h-3 fill-indigo-600" />
+                          <span>แก้ด่วน</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => {
@@ -2353,7 +3789,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             setBlindImg(item.imageBase64 || "");
                           }}
                           className="text-slate-400 hover:text-indigo-600 p-1 rounded transition cursor-pointer"
-                          title="แก้ไขวัสดุนี้"
+                          title="แก้ไขวัสดุนี้ในฟอร์ม"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
@@ -2370,7 +3806,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   ))}
                 </div>
               </div>
- 
+
               {/* Roller Shades List */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm">
                 <h4 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider mb-3 flex items-center justify-between border-b border-slate-100 pb-2">
@@ -2395,16 +3831,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {(settings.rollerMaterials || []).map((item) => (
                     <div key={item.id} className="flex items-center justify-between bg-slate-50 border border-slate-150 p-2.5 rounded-xl text-xs">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
                         <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
                           {item.imageBase64 && <img src={item.imageBase64} alt="" className="w-full h-full object-cover" />}
                         </div>
-                        <div>
-                          <p className="font-bold text-slate-800 truncate max-w-[110px]">{item.name}</p>
-                          <p className="text-[10px] text-indigo-600 font-bold mt-0.5">{item.colorName}</p>
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-800 truncate max-w-[100px]">{item.name}</p>
+                          <p className="text-[10px] text-indigo-600 font-bold mt-0.5 truncate max-w-[100px]">{item.colorName}</p>
+                          <span className="inline-block text-[9px] font-semibold text-indigo-700 bg-indigo-50 px-1.5 py-0.2 rounded mt-0.5">
+                            ม่านม้วน
+                          </span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-0.5">
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Quick Category Switcher */}
+                        <select
+                          value={item.type || "Roller Shades"}
+                          onChange={(e) => handleMoveBlindCategory(item, "roller", e.target.value as any)}
+                          title="ย้ายไปยังหมวดหมู่อื่น"
+                          className="text-[10px] bg-white border border-slate-200 rounded-lg px-1 py-1 text-slate-600 font-bold focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
+                        >
+                          <option value="Roller Shades">ม่านม้วน</option>
+                          <option value="Wood Blinds">มู่ลี่ไม้</option>
+                          <option value="Aluminum Blinds">มู่ลี่อะลูมิเนียม</option>
+                          <option value="Fabric Tape">เทปผ้า</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => openQuickEdit("roller", item, "rollerMaterials")}
+                          className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-1.5 rounded-lg transition cursor-pointer flex items-center gap-0.5 text-[10px] font-bold"
+                          title="แก้ไขข้อความด่วน (⚡ ทันใจไม่ต้องโหลด)"
+                        >
+                          <Zap className="w-3 h-3 fill-indigo-600" />
+                          <span>แก้ด่วน</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => {
@@ -2415,7 +3875,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             setBlindImg(item.imageBase64 || "");
                           }}
                           className="text-slate-400 hover:text-indigo-600 p-1 rounded transition cursor-pointer"
-                          title="แก้ไขวัสดุนี้"
+                          title="แก้ไขวัสดุนี้ในฟอร์ม"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
@@ -2432,26 +3892,65 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   ))}
                 </div>
               </div>
- 
+
               {/* Blinds Fabric Tape Ribbon List */}
               <div className="bg-white rounded-2xl border border-slate-200/80 p-5 shadow-sm">
                 <h4 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider mb-3 flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span>เทปผ้าสำหรับตกแต่งมู่ลี่ ({(settings.blindTapeMaterials || []).length} รายการ)</span>
+                  <div className="flex items-center gap-2">
+                    <span>เทปผ้าสำหรับตกแต่งมู่ลี่ ({(settings.blindTapeMaterials || []).length} รายการ)</span>
+                    {(settings.blindTapeMaterials || []).length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setClearTarget("tape");
+                          setClearConfirmInput("");
+                        }}
+                        className="text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 text-[10px] font-bold px-2 py-0.5 rounded flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>ล้างข้อมูล</span>
+                      </button>
+                    )}
+                  </div>
                   <span className="text-[10px] font-bold text-slate-400">COTTON TAPE RIBBONS</span>
                 </h4>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {(settings.blindTapeMaterials || []).map((item) => (
                     <div key={item.id} className="flex items-center justify-between bg-slate-50 border border-slate-150 p-2.5 rounded-xl text-xs">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
                         <div className="w-9 h-9 rounded-lg bg-white border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
                           {item.imageBase64 && <img src={item.imageBase64} alt="" className="w-full h-full object-cover" />}
                         </div>
-                        <div>
-                          <p className="font-bold text-slate-800 truncate max-w-[110px]">{item.name}</p>
-                          <p className="text-[10px] text-indigo-600 font-bold mt-0.5">{item.colorName}</p>
+                        <div className="min-w-0">
+                          <p className="font-bold text-slate-800 truncate max-w-[100px]">{item.name}</p>
+                          <p className="text-[10px] text-indigo-600 font-bold mt-0.5 truncate max-w-[100px]">{item.colorName}</p>
+                          <span className="inline-block text-[9px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded mt-0.5">
+                            เทปผ้าสำหรับมู่ลี่
+                          </span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-0.5">
+                      <div className="flex items-center gap-1 shrink-0">
+                        {/* Quick Category Switcher */}
+                        <select
+                          value={item.type || "Fabric Tape"}
+                          onChange={(e) => handleMoveBlindCategory(item, "tape", e.target.value as any)}
+                          title="ย้ายไปยังหมวดหมู่อื่น"
+                          className="text-[10px] bg-white border border-slate-200 rounded-lg px-1 py-1 text-slate-600 font-bold focus:ring-1 focus:ring-indigo-500 outline-none cursor-pointer"
+                        >
+                          <option value="Fabric Tape">เทปผ้า</option>
+                          <option value="Wood Blinds">มู่ลี่ไม้</option>
+                          <option value="Aluminum Blinds">มู่ลี่อะลูมิเนียม</option>
+                          <option value="Roller Shades">ม่านม้วน</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => openQuickEdit("tape", item, "blindTapeMaterials")}
+                          className="text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 p-1.5 rounded-lg transition cursor-pointer flex items-center gap-0.5 text-[10px] font-bold"
+                          title="แก้ไขข้อความด่วน (⚡ ทันใจไม่ต้องโหลด)"
+                        >
+                          <Zap className="w-3 h-3 fill-indigo-600" />
+                          <span>แก้ด่วน</span>
+                        </button>
                         <button
                           type="button"
                           onClick={() => {
@@ -2462,7 +3961,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                             setBlindImg(item.imageBase64 || "");
                           }}
                           className="text-slate-400 hover:text-indigo-600 p-1 rounded transition cursor-pointer"
-                          title="แก้ไขวัสดุนี้"
+                          title="แก้ไขวัสดุนี้ในฟอร์ม"
                         >
                           <Edit3 className="w-3.5 h-3.5" />
                         </button>
@@ -2531,20 +4030,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="flex gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      onSaveSettings({ ...settings, customGeminiApiKey: customApiKey.trim() || undefined });
-                      showToast("บันทึกคีย์ Gemini ส่วนตัวเรียบร้อยแล้ว! ระบบจะเริ่มใช้งานคีย์นี้ทันที", "success");
+                    onClick={async () => {
+                      const trimmed = customApiKey.trim();
+                      if (trimmed) {
+                        await saveDedicatedGeminiApiKey(trimmed);
+                      }
+                      await onSaveSettings({ ...settings, customGeminiApiKey: trimmed || undefined });
+                      showToast("บันทึกคีย์ Gemini ส่วนตัวเรียบร้อยแล้ว! ข้อมูลจะถูกเก็บถาวรและเริ่มใช้งานทันที", "success");
                     }}
                     className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap"
                   >
                     บันทึกคีย์
                   </button>
-                  {settings.customGeminiApiKey && (
+                  {(settings.customGeminiApiKey || customApiKey) && (
                     <button
                       type="button"
-                      onClick={() => {
+                      onClick={async () => {
                         setCustomApiKey("");
-                        onSaveSettings({ ...settings, customGeminiApiKey: undefined });
+                        await removeDedicatedGeminiApiKey();
+                        await onSaveSettings({ ...settings, customGeminiApiKey: undefined });
                         showToast("ลบคีย์ส่วนตัวแล้ว ระบบจะกลับไปใช้คีย์กลางฟรีของระบบ", "info");
                       }}
                       className="bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold px-3 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap"
@@ -2765,6 +4269,933 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           โดยไม่สิ้นเปลืองพื้นที่ดิสก์ขอบคุณการบีบอัดภาพสวอชคุณภาพสูงแบบจัดเรียง
         </div>
       </div>
+      {/* Bulk Upload Progress Modal */}
+      {bulkUploadStatus && (
+        <div className="fixed inset-0 z-[99999] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-md w-full p-6 animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center gap-3.5 mb-4">
+              <div className="w-12 h-12 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0">
+                {bulkUploadStatus.phase === "processing" ? (
+                  <Zap className="w-6 h-6 text-indigo-600 animate-bounce" />
+                ) : (
+                  <Database className="w-6 h-6 text-emerald-600 animate-pulse" />
+                )}
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-extrabold text-slate-900 leading-tight">
+                  {bulkUploadStatus.phase === "processing"
+                    ? `กำลังประมวลผลรูปภาพสวอช...`
+                    : `กำลังซิงค์ขึ้น Cloud Database...`}
+                </h3>
+                <p className="text-xs text-indigo-600 font-bold mt-0.5 truncate">
+                  {bulkUploadStatus.title} ({bulkUploadStatus.current} / {bulkUploadStatus.total} รูป)
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-500 leading-relaxed mb-4">
+              {bulkUploadStatus.phase === "processing"
+                ? "ระบบกำลังทำการถอดรหัสและบีบอัดรูปภาพสวอชแบบคู่ขนาน (Parallel Processing) เพื่อความเร็วสูงสุดและไม่ค้างที่ 99%"
+                : "ระบบกำลังบันทึกข้อมูลและอัปโหลดรูปภาพไปยัง Firebase Storage & Firestore..."}
+            </p>
+
+            <div className="space-y-2 mb-2">
+              <div className="flex justify-between text-xs font-bold text-slate-700">
+                <span>ความคืบหน้า</span>
+                <span>
+                  {bulkUploadStatus.phase === "processing"
+                    ? `${Math.round((bulkUploadStatus.current / Math.max(1, bulkUploadStatus.total)) * 100)}%`
+                    : `${saveProgress !== null ? saveProgress : 100}%`}
+                </span>
+              </div>
+              <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden p-0.5 border border-slate-200/60">
+                <div
+                  className="h-full bg-gradient-to-r from-indigo-500 to-emerald-500 rounded-full transition-all duration-300 shadow-sm"
+                  style={{
+                    width: `${
+                      bulkUploadStatus.phase === "processing"
+                        ? Math.min(100, Math.round((bulkUploadStatus.current / Math.max(1, bulkUploadStatus.total)) * 100))
+                        : (saveProgress !== null ? saveProgress : 100)
+                    }%`
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-center gap-2 pt-2 text-[11px] text-slate-400 font-medium">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-500" />
+              <span>กรุณาอย่าเพิ่งปิดหน้าต่างขณะกำลังอัปโหลด</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Swatches Batch Confirmation Modal */}
+      {duplicateModalState && (
+        <div className="fixed inset-0 z-[99999] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col p-6 animate-in fade-in zoom-in duration-200">
+            {/* Header */}
+            <div className="flex items-center gap-3.5 mb-3 pb-3 border-b border-slate-100">
+              <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6 text-amber-600 animate-pulse" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-base font-extrabold text-slate-900 leading-tight">
+                  พบรายการสวอชซ้ำในระบบ ({duplicateModalState.duplicateItems.length} รายการ)
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  สำหรับหมวดหมู่ <span className="font-bold text-indigo-600">{duplicateModalState.typeTitle}</span>
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDuplicateModalState(null)}
+                className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Description & Action Bar */}
+            <div className="bg-amber-50/70 border border-amber-100 rounded-2xl p-3.5 mb-4 text-xs text-amber-900">
+              <p className="font-semibold leading-relaxed">
+                ระบบตรวจพบว่ามีสวอชที่ชื่อคอลเลกชันและรหัสสีตรงกับรายการที่มีอยู่ในฐานข้อมูลแล้ว ท่านสามารถเลือก <span className="font-black text-indigo-700">บันทึกทับ (Overwrite)</span> เพื่อแทนที่รูปสวอชและสเปกผ้า หรือข้ามรายการที่ซ้ำได้
+              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2 mt-3 pt-2.5 border-t border-amber-200/60">
+                <div className="flex items-center gap-2 font-bold text-[11px] flex-wrap">
+                  <span className="bg-slate-100 text-slate-800 px-2.5 py-1 rounded-lg">
+                    📁 ไฟล์ที่เลือกทั้งหมด: {duplicateModalState.uniqueNewItems.length + duplicateModalState.duplicateItems.length} รายการ
+                  </span>
+                  <span className="bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-lg">
+                    ✨ รายการใหม่: {duplicateModalState.uniqueNewItems.length} รายการ
+                  </span>
+                  <span className="bg-amber-100 text-amber-900 px-2.5 py-1 rounded-lg">
+                    ⚠️ รายการชื่อซ้ำ: {duplicateModalState.duplicateItems.length} รายการ
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDuplicateModalState((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              duplicateItems: prev.duplicateItems.map((item) => ({ ...item, overwrite: true })),
+                            }
+                          : null
+                      );
+                    }}
+                    className="text-[11px] font-bold text-indigo-600 hover:text-indigo-800 underline cursor-pointer"
+                  >
+                    เลือกบันทึกทับทั้งหมด
+                  </button>
+                  <span className="text-slate-300">|</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDuplicateModalState((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              duplicateItems: prev.duplicateItems.map((item) => ({ ...item, overwrite: false })),
+                            }
+                          : null
+                      );
+                    }}
+                    className="text-[11px] font-bold text-slate-600 hover:text-slate-800 underline cursor-pointer"
+                  >
+                    ไม่บันทึกทับทั้งหมด
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Comparison Scrollable List */}
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 max-h-[360px] custom-scrollbar mb-4">
+              {duplicateModalState.duplicateItems.map((item, idx) => (
+                <div
+                  key={idx}
+                  onClick={() => {
+                    setDuplicateModalState((prev) => {
+                      if (!prev) return null;
+                      const nextItems = [...prev.duplicateItems];
+                      nextItems[idx] = { ...nextItems[idx], overwrite: !nextItems[idx].overwrite };
+                      return { ...prev, duplicateItems: nextItems };
+                    });
+                  }}
+                  className={`p-3 rounded-2xl border transition-all cursor-pointer flex items-center gap-3 ${
+                    item.overwrite
+                      ? "bg-indigo-50/50 border-indigo-200 ring-1 ring-indigo-400/30"
+                      : "bg-slate-50/70 border-slate-200 opacity-70"
+                  }`}
+                >
+                  <div className="shrink-0 text-indigo-600">
+                    {item.overwrite ? (
+                      <CheckSquare className="w-5 h-5 text-indigo-600" />
+                    ) : (
+                      <Square className="w-5 h-5 text-slate-400" />
+                    )}
+                  </div>
+
+                  {/* Left: Existing in Database */}
+                  <div className="flex items-center gap-2.5 flex-1 min-w-0 bg-white p-2 rounded-xl border border-slate-200/80">
+                    {item.existingItem.imageBase64 ? (
+                      <img
+                        src={item.existingItem.imageBase64}
+                        alt={item.existingItem.name}
+                        className="w-10 h-10 rounded-lg object-cover border border-slate-200 shrink-0"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] text-slate-400 font-bold shrink-0">
+                        ไม่มีรูป
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">ในระบบเดิม</div>
+                      <div className="text-xs font-black text-slate-900 truncate">{item.existingItem.name}</div>
+                      <div className="text-[11px] font-bold text-slate-600 truncate">{item.existingItem.colorName}</div>
+                    </div>
+                  </div>
+
+                  {/* Arrow Icon */}
+                  <ArrowRight className="w-4 h-4 text-indigo-400 shrink-0" />
+
+                  {/* Right: New Incoming Swatch */}
+                  <div className="flex items-center gap-2.5 flex-1 min-w-0 bg-indigo-50/80 p-2 rounded-xl border border-indigo-200/80">
+                    {item.newItem.imageBase64 ? (
+                      <img
+                        src={item.newItem.imageBase64}
+                        alt={item.newItem.name}
+                        className="w-10 h-10 rounded-lg object-cover border border-indigo-200 shrink-0 shadow-sm"
+                      />
+                    ) : (
+                      <div className="w-10 h-10 rounded-lg bg-indigo-100 border border-indigo-200 flex items-center justify-center text-[10px] text-indigo-400 font-bold shrink-0">
+                        ไม่มีรูป
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[10px] font-bold text-indigo-600 uppercase tracking-wider">รูปใหม่ที่นำเข้า</div>
+                      <div className="text-xs font-black text-indigo-950 truncate">{item.newItem.name}</div>
+                      <div className="text-[11px] font-bold text-indigo-700 truncate">{item.newItem.colorName}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2.5">
+              <button
+                type="button"
+                onClick={() => setDuplicateModalState(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-bold transition cursor-pointer"
+              >
+                ยกเลิกการนำเข้า
+              </button>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {duplicateModalState.uniqueNewItems.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const { dbType, blindSubtype, uniqueNewItems, typeTitle } = duplicateModalState;
+                      setDuplicateModalState(null);
+                      await commitImportedMaterials(dbType, blindSubtype, uniqueNewItems, [], typeTitle);
+                    }}
+                    className="px-4 py-2.5 rounded-xl border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-xs font-bold transition cursor-pointer"
+                  >
+                    ข้ามรายการซ้ำ (เพิ่มเฉพาะ {duplicateModalState.uniqueNewItems.length} รายการใหม่)
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const { dbType, blindSubtype, uniqueNewItems, duplicateItems, typeTitle } = duplicateModalState;
+                    const allAsNew = [
+                      ...uniqueNewItems,
+                      ...duplicateItems.map((d, i) => ({
+                        ...d.newItem,
+                        id: generateId(),
+                        colorName: `${d.newItem.colorName} (ใหม่)`,
+                      })),
+                    ];
+                    setDuplicateModalState(null);
+                    await commitImportedMaterials(dbType, blindSubtype, allAsNew, [], typeTitle);
+                  }}
+                  className="px-4 py-2.5 rounded-xl border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-900 text-xs font-bold transition cursor-pointer"
+                >
+                  เพิ่มทั้งหมดเป็นรายการใหม่ ({duplicateModalState.uniqueNewItems.length + duplicateModalState.duplicateItems.length} รายการ)
+                </button>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const { dbType, blindSubtype, uniqueNewItems, duplicateItems, typeTitle } = duplicateModalState;
+                    setDuplicateModalState(null);
+                    await commitImportedMaterials(dbType, blindSubtype, uniqueNewItems, duplicateItems, typeTitle);
+                  }}
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition shadow-lg shadow-indigo-600/20 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>
+                    บันทึกทับ ({duplicateModalState.duplicateItems.filter((x) => x.overwrite).length}) + เพิ่มใหม่ ({duplicateModalState.uniqueNewItems.length})
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Single Item Duplicate Overwrite Modal */}
+      {singleDuplicateConfirm && (
+        <div className="fixed inset-0 z-[99999] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-md w-full p-6 animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center gap-3.5 mb-4">
+              <div className="w-12 h-12 rounded-2xl bg-amber-50 border border-amber-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6 text-amber-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 leading-tight">
+                  พบรายการสวอชซ้ำในระบบ
+                </h3>
+                <p className="text-xs text-slate-500 font-bold mt-0.5">
+                  {singleDuplicateConfirm.newItem.name} - {singleDuplicateConfirm.newItem.colorName}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed mb-4">
+              มีรายการผ้าม่านชื่อและรหัสสีนี้อยู่ในฐานข้อมูลแล้ว คุณต้องการบันทึกทับ (Overwrite) ข้อมูลและรูปภาพสวอชเดิมหรือไม่?
+            </p>
+
+            <div className="flex items-center justify-center gap-4 bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 mb-4">
+              <div className="text-center">
+                <div className="text-[10px] font-bold text-slate-400 mb-1">รูปสวอชเดิม</div>
+                {singleDuplicateConfirm.existingItem.imageBase64 ? (
+                  <img
+                    src={singleDuplicateConfirm.existingItem.imageBase64}
+                    alt="Existing"
+                    className="w-16 h-16 rounded-xl object-cover border border-slate-200 mx-auto"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center text-[10px] text-slate-400 font-bold mx-auto">
+                    ไม่มีรูป
+                  </div>
+                )}
+              </div>
+
+              <ArrowRight className="w-5 h-5 text-indigo-500 shrink-0" />
+
+              <div className="text-center">
+                <div className="text-[10px] font-bold text-indigo-600 mb-1">รูปสวอชใหม่</div>
+                {singleDuplicateConfirm.newItem.imageBase64 ? (
+                  <img
+                    src={singleDuplicateConfirm.newItem.imageBase64}
+                    alt="New"
+                    className="w-16 h-16 rounded-xl object-cover border border-indigo-200 mx-auto shadow-sm"
+                  />
+                ) : (
+                  <div className="w-16 h-16 rounded-xl bg-indigo-50 border border-indigo-200 flex items-center justify-center text-[10px] text-indigo-400 font-bold mx-auto">
+                    ไม่มีรูป
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-2.5 justify-end">
+              <button
+                type="button"
+                onClick={() => setSingleDuplicateConfirm(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold transition cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmSingleOverwrite}
+                className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/20 cursor-pointer"
+              >
+                <Check className="w-4 h-4" />
+                <span>บันทึกทับข้อมูลเดิม</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear & Batch Management Modal */}
+      {clearTarget && (
+        <div className="fixed inset-0 z-[99999] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-xl w-full p-6 animate-in fade-in zoom-in duration-200 max-h-[90vh] flex flex-col">
+            
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0">
+                  <Layers className="w-5 h-5 text-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-slate-900 leading-tight">
+                    จัดการข้อมูล & ลบล้างสวอช
+                  </h3>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">
+                    {clearTarget === "solid" && `หมวดผ้าม่านทึบแสง (${(settings.solidFabricMaterials || []).length} รายการ)`}
+                    {clearTarget === "sheer" && `หมวดผ้าม่านโปร่งแสง (${(settings.sheerFabricMaterials || []).length} รายการ)`}
+                    {clearTarget === "blind" && `หมวดมู่ลี่ไม้และอะลูมิเนียม (${(settings.blindMaterials || []).length} รายการ)`}
+                    {clearTarget === "roller" && `หมวดม่านม้วน (${(settings.rollerMaterials || []).length} รายการ)`}
+                    {clearTarget === "tape" && `หมวดเทปผ้าสำหรับมู่ลี่ (${(settings.blindTapeMaterials || []).length} รายการ)`}
+                    {clearTarget === "styles" && `หมวดรูปแบบผ้าม่าน (${(settings.styleMaterials || []).length} รายการ)`}
+                    {clearTarget === "hems" && `หมวดสเปกระยะชายม่าน (${(settings.hemMaterials || []).length} รายการ)`}
+                    {clearTarget === "tracks" && `หมวดรางม่าน (${(settings.trackMaterials || []).length} รายการ)`}
+                    {clearTarget === "accessories" && `หมวดอุปกรณ์เสริม (${(settings.accessoryMaterials || []).length} รายการ)`}
+                    {clearTarget === "all_materials" && `แคตตาล็อกวัสดุและสวอชทั้งหมด (${((settings.solidFabricMaterials || []).length + (settings.sheerFabricMaterials || []).length + (settings.blindMaterials || []).length + (settings.rollerMaterials || []).length + (settings.blindTapeMaterials || []).length + (settings.styleMaterials || []).length + (settings.hemMaterials || []).length)} รายการ)`}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setClearTarget(null);
+                  setClearConfirmInput("");
+                }}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-xl hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Tabs */}
+            {(clearTarget === "solid" || clearTarget === "sheer" || clearTarget === "blind" || clearTarget === "roller" || clearTarget === "tape" || clearTarget === "all_materials") && (
+              <div className="flex border-b border-slate-100 mt-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setClearModalTab("batches")}
+                  className={`flex-1 py-2.5 text-xs font-bold transition flex items-center justify-center gap-1.5 border-b-2 cursor-pointer ${
+                    clearModalTab === "batches"
+                      ? "border-indigo-600 text-indigo-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <Clock className="w-4 h-4" />
+                  <span>ลบเฉพาะรอบการอัปโหลด (Batch Clear)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setClearModalTab("all")}
+                  className={`flex-1 py-2.5 text-xs font-bold transition flex items-center justify-center gap-1.5 border-b-2 cursor-pointer ${
+                    clearModalTab === "all"
+                      ? "border-rose-600 text-rose-600"
+                      : "border-transparent text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>ล้างข้อมูลทั้งหมดในหมวด</span>
+                </button>
+              </div>
+            )}
+
+            {/* TAB CONTENT: Upload Batches */}
+            {clearModalTab === "batches" && (clearTarget === "solid" || clearTarget === "sheer" || clearTarget === "blind" || clearTarget === "roller" || clearTarget === "tape" || clearTarget === "all_materials") ? (
+              <div className="flex-1 overflow-y-auto py-4 pr-1 space-y-3 min-h-[220px]">
+                {(() => {
+                  let targetList: FabricMaterial[] = [];
+                  if (clearTarget === "solid") targetList = settings.solidFabricMaterials || [];
+                  else if (clearTarget === "sheer") targetList = settings.sheerFabricMaterials || [];
+                  else if (clearTarget === "blind") targetList = settings.blindMaterials || [];
+                  else if (clearTarget === "roller") targetList = settings.rollerMaterials || [];
+                  else if (clearTarget === "tape") targetList = settings.blindTapeMaterials || [];
+                  else if (clearTarget === "all_materials") {
+                    targetList = [
+                      ...(settings.solidFabricMaterials || []),
+                      ...(settings.sheerFabricMaterials || []),
+                      ...(settings.blindMaterials || []),
+                      ...(settings.rollerMaterials || []),
+                      ...(settings.blindTapeMaterials || []),
+                    ];
+                  }
+
+                  const batches = getBatchSummaries(targetList);
+
+                  if (batches.length === 0) {
+                    return (
+                      <div className="text-center py-10 text-slate-400">
+                        <FolderCheck className="w-10 h-10 mx-auto mb-2 text-slate-300" />
+                        <p className="text-xs">ไม่มีรายการข้อมูลในหมวดหมู่นี้</p>
+                      </div>
+                    );
+                  }
+
+                  return batches.map((batch) => (
+                    <div
+                      key={batch.batchId}
+                      className="bg-slate-50 hover:bg-slate-100/80 border border-slate-200/80 rounded-2xl p-3.5 transition flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className="font-extrabold text-slate-900 text-xs truncate">
+                            {batch.batchName}
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-indigo-100 text-indigo-700">
+                            {batch.count} รายการ
+                          </span>
+                          {batch.uploadedAt && (
+                            <span className="text-[10px] text-slate-400 flex items-center gap-1 font-medium">
+                              <Calendar className="w-3 h-3" />
+                              {formatThaiDate(batch.uploadedAt)}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Sample Fabric Names */}
+                        {batch.fabricNames.length > 0 && (
+                          <div className="text-[10px] text-slate-500 truncate mb-2">
+                            ผ้า: {batch.fabricNames.join(", ")}
+                            {batch.count > batch.fabricNames.length ? "..." : ""}
+                          </div>
+                        )}
+
+                        {/* Sample Swatch Thumbnails */}
+                        {batch.sampleImages.length > 0 && (
+                          <div className="flex items-center gap-1.5 overflow-hidden">
+                            {batch.sampleImages.map((img, idx) => (
+                              <img
+                                key={idx}
+                                src={img}
+                                alt=""
+                                className="w-7 h-7 rounded-lg object-cover border border-slate-200"
+                              />
+                            ))}
+                            {batch.count > batch.sampleImages.length && (
+                              <span className="text-[9px] font-bold text-slate-400 bg-white border border-slate-200 rounded-lg px-1.5 py-1">
+                                +{batch.count - batch.sampleImages.length}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Clear Button */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBatchConfirmDeleteState({
+                            targetCategory: clearTarget as any,
+                            batchId: batch.batchId,
+                            batchName: batch.batchName,
+                            count: batch.count,
+                          });
+                        }}
+                        className="bg-rose-50 hover:bg-rose-600 text-rose-600 hover:text-white border border-rose-200 hover:border-rose-600 font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center justify-center gap-1.5 shrink-0 shadow-xs cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>ลบเฉพาะรอบนี้</span>
+                      </button>
+                    </div>
+                  ));
+                })()}
+              </div>
+            ) : (
+              /* TAB CONTENT: Full Category Wipe */
+              <div className="py-4 space-y-4">
+                <div className="bg-rose-50/80 border border-rose-200/80 rounded-2xl p-4 text-xs text-rose-900 leading-relaxed">
+                  <div className="font-extrabold flex items-center gap-1.5 mb-1 text-rose-700">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>คำเตือน: การล้างข้อมูลทั้งหมด</span>
+                  </div>
+                  การกระทำนี้จะลบรายการข้อมูลสวอชทั้งหมดในหมวดหมู่นี้ออกจากฐานข้อมูลอย่างถาวร หากต้องการลบเฉพาะบางรอบการนำเข้า กรุณาเลือกแท็บ <strong>"ลบเฉพาะรอบการอัปโหลด"</strong> ด้านบน
+                </div>
+
+                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5">
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1.5">
+                    พิมพ์คำว่า <span className="font-black text-rose-600 font-mono text-xs">CONFIRM</span> เพื่อยืนยันการล้างข้อมูลทั้งหมด:
+                  </label>
+                  <input
+                    type="text"
+                    autoFocus
+                    value={clearConfirmInput}
+                    onChange={(e) => setClearConfirmInput(e.target.value)}
+                    placeholder="พิมพ์ CONFIRM"
+                    className="w-full bg-white border border-rose-200 rounded-xl px-3.5 py-2.5 text-xs font-mono font-bold text-slate-900 tracking-wider focus:ring-2 focus:ring-rose-500/20 focus:border-rose-400 outline-none uppercase"
+                  />
+                </div>
+
+                <div className="flex gap-2.5 justify-end pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClearTarget(null);
+                      setClearConfirmInput("");
+                    }}
+                    className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold transition cursor-pointer"
+                  >
+                    ยกเลิก
+                  </button>
+                  <button
+                    type="button"
+                    disabled={clearConfirmInput.trim().toUpperCase() !== "CONFIRM" || isSaving}
+                    onClick={handleClearList}
+                    className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-rose-600/20 cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>{isSaving ? "กำลังล้างข้อมูล..." : "ยืนยันล้างข้อมูลทั้งหมด"}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Dedicated Batch Specific Deletion Confirmation Dialog */}
+      {batchConfirmDeleteState && (
+        <div className="fixed inset-0 z-[999999] bg-slate-900/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-md w-full p-6 animate-in fade-in zoom-in duration-200">
+            <div className="flex items-center gap-3.5 mb-4">
+              <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-100 flex items-center justify-center shrink-0">
+                <Trash2 className="w-6 h-6 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 leading-tight">
+                  ยืนยันลบข้อมูลเฉพาะรอบนี้
+                </h3>
+                <p className="text-xs text-rose-600 font-bold mt-0.5">
+                  {batchConfirmDeleteState.batchName} ({batchConfirmDeleteState.count} รายการ)
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed mb-5">
+              ระบบจะลบเฉพาะรายการสวอชผ้าที่ถูกอัปโหลดในรอบ <strong>"{batchConfirmDeleteState.batchName}"</strong> จำนวน <strong>{batchConfirmDeleteState.count} รายการ</strong> ออกจากฐานข้อมูล โดยรายการในรอบอื่นๆ จะไม่ได้รับผลกระทบใดๆ
+            </p>
+
+            <div className="flex gap-2.5 justify-end">
+              <button
+                type="button"
+                onClick={() => setBatchConfirmDeleteState(null)}
+                className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold transition cursor-pointer"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={() =>
+                  handleClearBatch(
+                    batchConfirmDeleteState.targetCategory,
+                    batchConfirmDeleteState.batchId,
+                    batchConfirmDeleteState.batchName
+                  )
+                }
+                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-rose-600/20 cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{isSaving ? "กำลังลบ..." : `ยืนยันลบ ${batchConfirmDeleteState.count} รายการ`}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ⚡ Lightning Fast Instant Text Edit Modal */}
+      {quickEditState && (
+        <div 
+          className="fixed inset-0 z-[999999] bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setQuickEditState(null);
+          }}
+        >
+          <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl max-w-lg w-full p-6 animate-in fade-in zoom-in-95 duration-150 relative">
+            <div className="flex items-center justify-between pb-3.5 mb-4 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 shrink-0">
+                  <Zap className="w-5 h-5 fill-indigo-600" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
+                    <span>แก้ไขข้อความด่วน</span>
+                    <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                      ⚡ ทันใจไม่ต้องโหลด
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    แก้ไขชื่อ/ข้อความและกด <kbd className="px-1.5 py-0.5 rounded bg-slate-100 border border-slate-300 font-mono text-[10px] font-bold text-slate-700">Enter</kbd> หรือคลิกบันทึกได้ทันที
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQuickEditState(null)}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-xl hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleQuickSave} className="space-y-4">
+              {/* Optional Swatch Thumbnail Preview */}
+              {quickEditState.item.imageBase64 && (
+                <div className="flex items-center gap-3 bg-slate-50 border border-slate-200/80 rounded-2xl p-3">
+                  <img
+                    src={quickEditState.item.imageBase64}
+                    alt=""
+                    className="w-12 h-12 rounded-xl object-cover border border-slate-200 shadow-xs"
+                  />
+                  <div className="text-xs">
+                    <p className="font-extrabold text-slate-800">สวอชสีเดิม</p>
+                    <p className="text-slate-400 text-[11px]">แก้ไขเฉพาะชื่อและข้อความโดยไม่กระทบรูปภาพ</p>
+                  </div>
+                </div>
+              )}
+
+              {quickEditState.category === "employee" ? (
+                /* Employee Edit Fields */
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      ชื่อพนักงาน / ดีไซเนอร์
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      autoFocus
+                      value={qeName}
+                      onChange={(e) => setQeName(e.target.value)}
+                      placeholder="เช่น สมชาย ใจดี"
+                      className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        Username (เข้าสู่ระบบ)
+                      </label>
+                      <input
+                        type="text"
+                        value={qeUsername}
+                        onChange={(e) => setQeUsername(e.target.value)}
+                        placeholder="เช่น somchai"
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3.5 py-2.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        รหัสผ่าน
+                      </label>
+                      <input
+                        type="text"
+                        value={qePassword}
+                        onChange={(e) => setQePassword(e.target.value)}
+                        placeholder="เช่น 1234"
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3.5 py-2.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        ตำแหน่ง / สิทธิ์
+                      </label>
+                      <select
+                        value={qeRole}
+                        onChange={(e) => setQeRole(e.target.value as any)}
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none transition cursor-pointer"
+                      >
+                        <option value="designer">🎨 ดีไซเนอร์ (Designer)</option>
+                        <option value="installer">🔧 ช่างติดตั้ง (Installer)</option>
+                        <option value="admin">👑 แอดมิน (Admin)</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        โควตา AI (ครั้ง/เดือน)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="9999"
+                        value={qeQuota}
+                        onChange={(e) => setQeQuota(parseInt(e.target.value) || 0)}
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 outline-none transition"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : quickEditState.category === "style" ? (
+                /* Style Edit Fields */
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      ชื่อรูปแบบม่าน
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      autoFocus
+                      value={qeName}
+                      onChange={(e) => setQeName(e.target.value)}
+                      placeholder="เช่น ม่านลอน (Wave Fold)"
+                      className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      หมวดหมู่
+                    </label>
+                    <select
+                      value={qeType}
+                      onChange={(e) => setQeType(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3.5 py-2.5 focus:bg-white outline-none transition cursor-pointer"
+                    >
+                      <option value="curtain">ม่านผ้า (Curtain)</option>
+                      <option value="blind">มู่ลี่ (Blinds)</option>
+                      <option value="roller">ม่านม้วน (Roller)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      ตัวเลือกวิธีกาง (คั่นด้วยจุลภาค)
+                    </label>
+                    <input
+                      type="text"
+                      value={qeOps}
+                      onChange={(e) => setQeOps(e.target.value)}
+                      placeholder="เช่น รวบซ้าย, รวบขวา, แยกกลาง"
+                      className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3.5 py-2.5 focus:bg-white outline-none transition"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      คำค้น AI (ภาษาอังกฤษ)
+                    </label>
+                    <input
+                      type="text"
+                      value={qeStyleEn}
+                      onChange={(e) => setQeStyleEn(e.target.value)}
+                      placeholder="เช่น wave fold curtain, ripple fold"
+                      className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3.5 py-2.5 focus:bg-white outline-none transition"
+                    />
+                  </div>
+                </div>
+              ) : quickEditState.category === "hem" || quickEditState.category === "track" || quickEditState.category === "accessory" ? (
+                /* Hem / Track / Accessory Edit Fields */
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    {quickEditState.category === "track"
+                      ? "ชื่อรางม่านติดตั้ง (Track Name)"
+                      : quickEditState.category === "accessory"
+                      ? "ชื่ออุปกรณ์เสริม (Accessory Name)"
+                      : "ชื่อระยะชายม่าน"}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    value={qeName}
+                    onChange={(e) => setQeName(e.target.value)}
+                    placeholder={
+                      quickEditState.category === "track"
+                        ? "เช่น ราง M-Track สีดำด้าน, รางม่านไฟฟ้า Somfy..."
+                        : quickEditState.category === "accessory"
+                        ? "เช่น สายรวบม่านพู่ระย้า, ด้ามจูงอะคริลิค 1.5 ม...."
+                        : "เช่น ลอยจากพื้น 1-2 ซม."
+                    }
+                    className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                  />
+                </div>
+              ) : (
+                /* Solid / Sheer / Blind / Roller / Tape Edit Fields */
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      ชื่อผ้า / ชื่อวัสดุ
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      autoFocus
+                      value={qeName}
+                      onChange={(e) => setQeName(e.target.value)}
+                      placeholder="เช่น PASAYA, ACACIA, VC"
+                      className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 uppercase focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        สีผ้า / รหัสสี
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={qeColorName}
+                        onChange={(e) => setQeColorName(e.target.value)}
+                        placeholder="เช่น 01-GREY, CREAM"
+                        className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 uppercase focus:bg-white focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
+                        ประเภท / หมวดหมู่
+                      </label>
+                      {quickEditState.category === "solid" ? (
+                        <select
+                          value={qeType}
+                          onChange={(e) => setQeType(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 focus:bg-white outline-none transition cursor-pointer"
+                        >
+                          <option value="Blackout">Blackout (กันแสง 100%)</option>
+                          <option value="Dimout">Dimout (กันแสง 70-90%)</option>
+                          <option value="Standard">Standard (ผ้าทึบทั่วไป)</option>
+                        </select>
+                      ) : quickEditState.category === "sheer" ? (
+                        <input
+                          type="text"
+                          value={qeType || "Sheer"}
+                          onChange={(e) => setQeType(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 focus:bg-white outline-none transition"
+                        />
+                      ) : (
+                        <select
+                          value={qeType}
+                          onChange={(e) => setQeType(e.target.value)}
+                          className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs font-bold rounded-xl px-3.5 py-2.5 focus:bg-white outline-none transition cursor-pointer"
+                        >
+                          <option value="Wood Blinds">มู่ลี่ไม้ (Wood Blinds)</option>
+                          <option value="Aluminum Blinds">มู่ลี่อะลูมิเนียม (Aluminum Blinds)</option>
+                          <option value="Roller Shades">ม่านม้วน (Roller Shades)</option>
+                          <option value="Fabric Tape">เทปผ้า (Fabric Tape)</option>
+                        </select>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2.5 justify-end pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setQuickEditState(null)}
+                  className="px-4 py-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-bold transition cursor-pointer"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold transition flex items-center gap-2 shadow-lg shadow-indigo-600/20 cursor-pointer"
+                >
+                  <Zap className="w-4 h-4 fill-amber-300 text-amber-300" />
+                  <span>บันทึกทันที (⚡ 0 วิ)</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {toast && (
         <div className={`fixed bottom-6 right-6 z-[9999] flex items-center gap-3 px-5 py-3.5 rounded-2xl shadow-2xl border text-xs font-bold transition-all duration-300 transform translate-y-0 scale-100 ${
           toast.type === "success" 

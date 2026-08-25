@@ -190,46 +190,11 @@ export const storage = {
       { id: "hem-6", name: "เลยวงกบล่าง 15 ซม.", imageBase64: "" },
     ];
 
-    const DEFAULT_SOLID_FABRICS = [
-      { id: "solid-1", name: "CITADEL", colorName: "LONDON GRAY", type: "Blackout" },
-      { id: "solid-2", name: "CITADEL", colorName: "CHASSIS GREY", type: "Blackout" },
-      { id: "solid-3", name: "GLAMOUR", colorName: "GOLDEN BRONZE", type: "Drapery" },
-      { id: "solid-4", name: "GLAMOUR", colorName: "CHAMPAGNE GOLD", type: "Drapery" },
-      { id: "solid-5", name: "SERENE", colorName: "COCOA BROWN", type: "Dimout" },
-      { id: "solid-6", name: "SERENE", colorName: "CREAMY BEIGE", type: "Dimout" },
-      { id: "solid-7", name: "ROYAL LUXE", colorName: "DEEP FOREST GREEN", type: "Energy Saving" },
-      { id: "solid-8", name: "ROYAL LUXE", colorName: "MIDNIGHT NAVY", type: "Energy Saving" },
-      { id: "solid-9", name: "SHERWOOD", colorName: "SAGE MIST", type: "Multipurpose" },
-    ];
-
-    const DEFAULT_SHEER_FABRICS = [
-      { id: "sheer-1", name: "AFFINITY", colorName: "WHITE", type: "Sheer" },
-      { id: "sheer-2", name: "AFFINITY", colorName: "SOFT CREAM", type: "Sheer" },
-      { id: "sheer-3", name: "AURA", colorName: "CREAMY IVORY", type: "Sheer" },
-      { id: "sheer-4", name: "AURA", colorName: "SILVER SHIMMER", type: "Sheer" },
-      { id: "sheer-5", name: "LACE CLASSIC", colorName: "SNOW FLAKE", type: "Sheer" },
-    ];
-
-    const DEFAULT_BLINDS = [
-      { id: "blind-1", name: "PREMIUM WOOD", colorName: "NATURAL OAK", type: "Wood Blinds" },
-      { id: "blind-2", name: "PREMIUM WOOD", colorName: "MATTE BLACK", type: "Wood Blinds" },
-      { id: "blind-3", name: "PREMIUM WOOD", colorName: "PURE WHITE", type: "Wood Blinds" },
-      { id: "blind-4", name: "ALUMINUM SLEEK", colorName: "PLATINUM SILVER", type: "Aluminum Blinds" },
-    ];
-
-    const DEFAULT_ROLLERS = [
-      { id: "roller-1", name: "ECO SHADE", colorName: "COOL GRAY", type: "Roller Shades" },
-      { id: "roller-2", name: "ECO SHADE", colorName: "SAND BEIGE", type: "Roller Shades" },
-      { id: "roller-3", name: "NIGHTFALL", colorName: "CHARCOAL BLACK", type: "Blockout Roller" },
-      { id: "roller-4", name: "NIGHTFALL", colorName: "OFF WHITE", type: "Dimout Roller" },
-    ];
-
-    const DEFAULT_TAPES = [
-      { id: "tape-1", name: "BLIND COTTON TAPE", colorName: "CHARCOAL COAL", type: "Blinds Fabric Tape" },
-      { id: "tape-2", name: "BLIND COTTON TAPE", colorName: "IVORY CREAM", type: "Blinds Fabric Tape" },
-      { id: "tape-3", name: "BLIND COTTON TAPE", colorName: "CHOCOLATE BROWN", type: "Blinds Fabric Tape" },
-      { id: "tape-4", name: "BLIND COTTON TAPE", colorName: "WARM GREY", type: "Blinds Fabric Tape" },
-    ];
+    const DEFAULT_SOLID_FABRICS: any[] = [];
+    const DEFAULT_SHEER_FABRICS: any[] = [];
+    const DEFAULT_BLINDS: any[] = [];
+    const DEFAULT_ROLLERS: any[] = [];
+    const DEFAULT_TAPES: any[] = [];
 
     const DEFAULT_TRACK_ITEMS = [
       { id: "track-1", name: "รางไมโคร ตัวเอ็ม (Standard M-Track)" },
@@ -283,12 +248,12 @@ export const storage = {
     }
 
     let modified = false;
-    if (!settings.styleMaterials || settings.styleMaterials.length === 0) {
+    if (settings.styleMaterials === undefined) {
       settings.styleMaterials = DEFAULT_STYLE_MATERIALS;
       modified = true;
     } else {
       // update style materials to make sure they have categories, operationOptions & styleEnForAi
-      settings.styleMaterials = settings.styleMaterials.map((sm, i) => {
+      settings.styleMaterials = settings.styleMaterials.map((sm) => {
         const found = DEFAULT_STYLE_MATERIALS.find(d => d.name === sm.name || d.id === sm.id);
         if (found) {
           return { 
@@ -302,51 +267,51 @@ export const storage = {
       });
     }
 
-    if (!settings.hemMaterials || settings.hemMaterials.length === 0) {
+    if (settings.hemMaterials === undefined) {
       settings.hemMaterials = DEFAULT_HEM_MATERIALS;
       modified = true;
     }
-    if (!settings.solidFabricMaterials || settings.solidFabricMaterials.length === 0) {
+    if (settings.solidFabricMaterials === undefined) {
       settings.solidFabricMaterials = DEFAULT_SOLID_FABRICS;
       modified = true;
     }
-    if (!settings.sheerFabricMaterials || settings.sheerFabricMaterials.length === 0) {
+    if (settings.sheerFabricMaterials === undefined) {
       settings.sheerFabricMaterials = DEFAULT_SHEER_FABRICS;
       modified = true;
     }
-    if (!settings.blindMaterials || settings.blindMaterials.length === 0) {
+    if (settings.blindMaterials === undefined) {
       settings.blindMaterials = DEFAULT_BLINDS;
       modified = true;
     }
-    if (!settings.rollerMaterials || settings.rollerMaterials.length === 0) {
+    if (settings.rollerMaterials === undefined) {
       settings.rollerMaterials = DEFAULT_ROLLERS;
       modified = true;
     }
-    if (!settings.blindTapeMaterials || settings.blindTapeMaterials.length === 0) {
+    if (settings.blindTapeMaterials === undefined) {
       settings.blindTapeMaterials = DEFAULT_TAPES;
       modified = true;
     }
-    if (!settings.trackMaterials || settings.trackMaterials.length === 0) {
+    if (settings.trackMaterials === undefined) {
       settings.trackMaterials = DEFAULT_TRACK_ITEMS;
       modified = true;
     }
-    if (!settings.accessoryMaterials || settings.accessoryMaterials.length === 0) {
+    if (settings.accessoryMaterials === undefined) {
       settings.accessoryMaterials = DEFAULT_ACCESSORY_ITEMS;
       modified = true;
     }
-    if (!settings.fabricTypes || settings.fabricTypes.length === 0) {
+    if (settings.fabricTypes === undefined) {
       settings.fabricTypes = ["Blackout", "Dimout", "Drapery", "Energy Saving"];
       modified = true;
     }
-    if (!settings.hangingTypes || settings.hangingTypes.length === 0) {
+    if (settings.hangingTypes === undefined) {
       settings.hangingTypes = DEFAULT_HANGING_TYPES;
       modified = true;
     }
-    if (!settings.usageTypes || settings.usageTypes.length === 0) {
+    if (settings.usageTypes === undefined) {
       settings.usageTypes = DEFAULT_USAGE_TYPES;
       modified = true;
     }
-    if (!settings.clearanceOptions || settings.clearanceOptions.length === 0) {
+    if (settings.clearanceOptions === undefined) {
       settings.clearanceOptions = DEFAULT_CLEARANCE_OPTIONS;
       modified = true;
     }

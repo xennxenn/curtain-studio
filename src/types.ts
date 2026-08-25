@@ -16,6 +16,9 @@ export interface FabricMaterial {
   imageColorHex?: string; // โทนสี (optional, legacy)
   type: string; // Blackout, Dimout, Drapery, Sheer, Blind, Roller, Tape, etc.
   imageBase64?: string;
+  uploadBatchId?: string; // รหัสรอบการอัปโหลด
+  uploadBatchName?: string; // ชื่อรอบการอัปโหลด เช่น ชื่อโฟลเดอร์ หรือ ชื่อไฟล์
+  uploadedAt?: string; // วันที่และเวลาที่อัปโหลด (ISO string)
 }
 
 export interface StyleMaterial {
@@ -25,12 +28,18 @@ export interface StyleMaterial {
   category?: "curtain" | "blind" | "roller" | "roman"; // ประเภทรูปแบบ
   operationOptions?: string[]; // ตัวเลือกการใช้งาน เช่น รวบซ้าย, รวบขวา, แยกกลาง
   styleEnForAi?: string; // คำสั่ง AI ภาษาอังกฤษสำหรับรูปแบบม่านนี้
+  uploadBatchId?: string;
+  uploadBatchName?: string;
+  uploadedAt?: string;
 }
 
 export interface HemMaterial {
   id: string;
   name: string;
   imageBase64?: string;
+  uploadBatchId?: string;
+  uploadBatchName?: string;
+  uploadedAt?: string;
 }
 
 export interface Settings {

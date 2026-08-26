@@ -218,8 +218,15 @@ export const subscribeJobs = (callback: (jobs: Job[]) => void) => {
       const localMerged = await loadAllMergedLocalJobs();
       const map = new Map<string, Job>();
       snapList.forEach((j) => map.set(j.id, j));
+      
+      // If local has jobs not yet present in Firestore, persist them to Firestore so all devices see them
       localMerged.forEach((j) => {
-        if (!map.has(j.id)) map.set(j.id, j);
+        if (!map.has(j.id)) {
+          map.set(j.id, j);
+          if (!quotaState.isExhausted) {
+            safeFirestoreWrite("syncLocalJobToCloud", () => setDoc(doc(db, "jobs", j.id), j));
+          }
+        }
       });
 
       const finalList = Array.from(map.values()).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
@@ -229,13 +236,6 @@ export const subscribeJobs = (callback: (jobs: Job[]) => void) => {
         localStorage.setItem("curtain_jobs", JSON.stringify(finalList));
       } catch {}
       idbSet(PERMANENT_KEYS.JOBS, finalList);
-
-      // If Firestore was empty but we restored local jobs, persist them to Firestore in background
-      if (snapList.length === 0 && finalList.length > 0 && !quotaState.isExhausted) {
-        finalList.forEach((j) => {
-          safeFirestoreWrite("restoreJob", () => setDoc(doc(db, "jobs", j.id), j));
-        });
-      }
 
       callback(finalList);
     },
@@ -268,8 +268,15 @@ export const subscribeWindows = (callback: (windows: WindowItem[]) => void) => {
       const localMerged = await loadAllMergedLocalWindows();
       const map = new Map<string, WindowItem>();
       snapList.forEach((w) => map.set(w.id, w));
+      
+      // If local has windows not yet in Firestore, push them so all devices see all windows
       localMerged.forEach((w) => {
-        if (!map.has(w.id)) map.set(w.id, w);
+        if (!map.has(w.id)) {
+          map.set(w.id, w);
+          if (!quotaState.isExhausted) {
+            safeFirestoreWrite("syncLocalWindowToCloud", () => setDoc(doc(db, "windows", w.id), w));
+          }
+        }
       });
 
       const finalList = Array.from(map.values());
@@ -279,12 +286,6 @@ export const subscribeWindows = (callback: (windows: WindowItem[]) => void) => {
         localStorage.setItem("curtain_windows", JSON.stringify(finalList));
       } catch {}
       idbSet(PERMANENT_KEYS.WINDOWS, finalList);
-
-      if (snapList.length === 0 && finalList.length > 0 && !quotaState.isExhausted) {
-        finalList.forEach((w) => {
-          safeFirestoreWrite("restoreWindow", () => setDoc(doc(db, "windows", w.id), w));
-        });
-      }
 
       callback(finalList);
     },
@@ -568,8 +569,24 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
           ...mergedSettings,
           ...data,
         };
+        if (data.customGeminiApiKey) {
+          saveDedicatedGeminiApiKey(data.customGeminiApiKey).catch(() => {});
+          fetch("/api/config/gemini-key", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ apiKey: data.customGeminiApiKey })
+          }).catch(() => {});
+        }
         isGlobalLoaded = true;
         triggerCallback();
+      }
+    } else if (!quotaState.isExhausted) {
+      // If bundle doesn't exist on Firestore yet, push our merged settings up to Firestore
+      const hasMaterials = (mergedSettings.solidFabricMaterials?.length || 0) > 0 ||
+        (mergedSettings.blindMaterials?.length || 0) > 0 ||
+        (mergedSettings.styleMaterials?.length || 0) > 0;
+      if (hasMaterials) {
+        safeFirestoreWrite("seedInitialBundle", () => setDoc(bundleRef, mergedSettings));
       }
     }
   }, (err) => {
@@ -605,6 +622,8 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       }
       isGlobalLoaded = true;
       triggerCallback();
+    } else if (!quotaState.isExhausted) {
+      safeFirestoreWrite("seedInitialGlobalSettings", () => setDoc(globalRef, mergedSettings));
     }
   }, (err) => {
     console.warn("Error in onSnapshot for settings/global:", err?.message || err);

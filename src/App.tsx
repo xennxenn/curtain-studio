@@ -109,6 +109,13 @@ export default function App() {
 
     const unsubscribeSettings = subscribeSettings((loadedSettings) => {
       setSettings(loadedSettings);
+      if (loadedSettings.customGeminiApiKey && loadedSettings.customGeminiApiKey.trim().length > 10) {
+        fetch("/api/config/gemini-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: loadedSettings.customGeminiApiKey.trim() }),
+        }).catch(() => {});
+      }
     });
 
     const unsubscribeQuota = subscribeQuotaStatus((status) => {

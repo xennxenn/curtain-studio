@@ -69,10 +69,13 @@ async function startServer() {
   // Shared lazy initializer for Gemini Client
   let aiClient: GoogleGenAI | null = null;
   function getGeminiClient(customApiKey?: string) {
-    const keyToUse = (customApiKey && customApiKey.trim().length > 10) 
-      ? customApiKey.trim() 
-      : (serverConfiguredApiKey && serverConfiguredApiKey.trim().length > 10)
+    if (customApiKey && typeof customApiKey === "string" && customApiKey.trim().length > 10) {
+      serverConfiguredApiKey = customApiKey.trim();
+    }
+    const keyToUse = (serverConfiguredApiKey && serverConfiguredApiKey.trim().length > 10)
       ? serverConfiguredApiKey.trim()
+      : (customApiKey && typeof customApiKey === "string" && customApiKey.trim().length > 10) 
+      ? customApiKey.trim() 
       : process.env.GEMINI_API_KEY;
 
     if (!keyToUse || keyToUse.trim().length < 10) {

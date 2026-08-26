@@ -28,7 +28,7 @@ import {
 } from "firebase/firestore";
 import { Job, WindowItem, Employee, Settings } from "../types";
 
-// Quota Status Management & Circuit Breaker
+// Quota Status Management
 export interface QuotaStatus {
   isExhausted: boolean;
   message?: string;
@@ -37,7 +37,7 @@ export interface QuotaStatus {
 }
 
 export const FIRESTORE_UPGRADE_URL =
-  "https://console.firebase.google.com/project/gen-lang-client-0777226266/firestore/databases/(default)/data";
+  "https://console.firebase.google.com/project/gen-lang-client-0145749136/firestore/databases/(default)/data";
 
 let quotaState: QuotaStatus = {
   isExhausted: false,
@@ -45,19 +45,6 @@ let quotaState: QuotaStatus = {
   upgradeUrl: FIRESTORE_UPGRADE_URL,
   lastChecked: Date.now()
 };
-
-// Check if quota status was previously persisted (auto-resets after 2 minutes)
-try {
-  const savedQuota = localStorage.getItem("firestore_quota_status");
-  if (savedQuota) {
-    const parsed = JSON.parse(savedQuota);
-    if (parsed.isExhausted && Date.now() - parsed.lastChecked < 2 * 60 * 1000) {
-      quotaState = parsed;
-    } else {
-      localStorage.removeItem("firestore_quota_status");
-    }
-  }
-} catch {}
 
 const quotaListeners = new Set<(status: QuotaStatus) => void>();
 
@@ -72,32 +59,13 @@ export const subscribeQuotaStatus = (listener: (status: QuotaStatus) => void) =>
 export const getQuotaStatus = (): QuotaStatus => quotaState;
 
 export const markQuotaExhausted = (msg?: string) => {
-  if (quotaState.isExhausted && Date.now() - quotaState.lastChecked < 60000) {
-    return;
-  }
-  quotaState = {
-    isExhausted: true,
-    message: msg || "โควต้าการเขียนข้อมูล Firestore รายวันเต็ม ระบบสลับเป็นโหมด Offline Local Cache อัตโนมัติ",
-    upgradeUrl: FIRESTORE_UPGRADE_URL,
-    lastChecked: Date.now()
-  };
-  try {
-    localStorage.setItem("firestore_quota_status", JSON.stringify(quotaState));
-  } catch {}
-  quotaListeners.forEach((l) => l(quotaState));
+  console.warn("[Firestore Notice]", msg);
 };
 
 export const resetQuotaStatus = () => {
-  quotaState = {
-    isExhausted: false,
-    message: "",
-    upgradeUrl: FIRESTORE_UPGRADE_URL,
-    lastChecked: Date.now()
-  };
   try {
     localStorage.removeItem("firestore_quota_status");
   } catch {}
-  quotaListeners.forEach((l) => l(quotaState));
 };
 
 export const isQuotaError = (err: any): boolean => {
@@ -107,31 +75,16 @@ export const isQuotaError = (err: any): boolean => {
   return (
     code.includes("resource-exhausted") ||
     msg.includes("resource-exhausted") ||
-    msg.includes("quota limit exceeded") ||
-    msg.includes("write stream exhausted") ||
-    msg.includes("quota exceeded") ||
-    msg.includes("rate exceeded") ||
-    msg.includes("too many requests") ||
-    msg.includes("free daily write units") ||
-    msg.includes("free daily read units") ||
-    msg.includes("maximum backoff delay")
+    msg.includes("quota")
   );
 };
 
-// Safe wrapper for Firestore writes
+// Safe wrapper for Firestore writes - always tries Firestore
 async function safeFirestoreWrite<T>(opName: string, writeFn: () => Promise<T>): Promise<T | null> {
-  if (quotaState.isExhausted) {
-    return null;
-  }
   try {
     return await writeFn();
   } catch (err: any) {
-    if (isQuotaError(err)) {
-      markQuotaExhausted(err?.message);
-      console.warn(`[Firestore Quota Circuit Breaker] ${opName} reached limit, safely using local storage:`, err?.message);
-    } else {
-      console.warn(`[Firestore Notice] ${opName} network notice (persisted in local cache):`, err?.message || err);
-    }
+    console.warn(`[Firestore Save Notice] ${opName}:`, err?.message || err);
     return null;
   }
 }
@@ -600,46 +553,7 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
     callback({ ...mergedSettings });
   };
 
-  // 1. Subscribe to catalog bundle document (Single-Document fast snapshot)
-  const bundleRef = doc(db, "settings", "catalog_bundle");
-  const unsubBundle = onSnapshot(bundleRef, (snap) => {
-    if (snap.exists()) {
-      const bundleData = snap.data() as Partial<Settings>;
-      if (bundleData) {
-        const currentApiKey = mergedSettings.customGeminiApiKey || getDedicatedGeminiApiKey();
-        
-        // Directly adopt updated arrays from database so deletions take effect immediately
-        const mergedArrays: Partial<Settings> = {};
-        subDocFields.forEach((field) => {
-          if (Array.isArray(bundleData[field])) {
-            mergedArrays[field] = (bundleData[field] as any[]).filter(
-              (item) => item && item.id && !deletedItemIds.has(item.id)
-            ) as any;
-          }
-        });
-
-        mergedSettings = {
-          ...mergedSettings,
-          ...bundleData,
-          ...mergedArrays,
-          customGeminiApiKey: bundleData.customGeminiApiKey || currentApiKey || undefined
-        };
-        isGlobalLoaded = true;
-        triggerCallback();
-      }
-    } else {
-      // If Firestore catalog_bundle does not exist, save current rich mergedSettings instead of resetting
-      if (!quotaState.isExhausted) {
-        safeFirestoreWrite("saveInitialCatalogBundle", () => setDoc(bundleRef, mergedSettings));
-      }
-    }
-  }, (err) => {
-    if (isQuotaError(err)) markQuotaExhausted(err?.message);
-    console.warn("Error in onSnapshot for settings/catalog_bundle:", err?.message || err);
-  });
-  unsubscribes.push(unsubBundle);
-
-  // 2. Subscribe to global document
+  // 1. Subscribe to global document (company logo, distances, patterns, apiKey, etc.)
   const globalRef = doc(db, "settings", "global");
   const unsubGlobal = onSnapshot(globalRef, (snap) => {
     if (snap.exists()) {
@@ -660,57 +574,37 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       }
       isGlobalLoaded = true;
       triggerCallback();
-    } else {
-      isGlobalLoaded = true;
-      triggerCallback();
     }
   }, (err) => {
-    if (isQuotaError(err)) markQuotaExhausted(err?.message);
-    console.warn("Error in onSnapshot for settings/global (falling back to cache):", err?.message || err);
-    isGlobalLoaded = true;
-    triggerCallback();
+    console.warn("Error in onSnapshot for settings/global:", err?.message || err);
   });
   unsubscribes.push(unsubGlobal);
 
-  // 2. Subscribe to each subcollection with Anti-Wipe Guard and ID-level merge
+  // 2. Subscribe to each subcollection in Firestore (authoritative real-time sync for fabrics, blinds, styles, etc.)
   subDocFields.forEach((field) => {
     const colRef = collection(db, "settings", "global", field);
 
     const unsubCol = onSnapshot(colRef, (snapshot) => {
-      const items = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as any[];
+      if (!snapshot.empty) {
+        // Authoritative Firestore items - replaces mock/default items cleanly
+        const items = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as any[];
 
-      const currentLocalItems = (mergedSettings[field] as any[]) || [];
+        mergedSettings = {
+          ...mergedSettings,
+          [field]: items
+        };
 
-      // ANTI-WIPE GUARD & MERGE: If Firestore subcollection has docs, merge with local items preserving unsynced local data
-      const itemMap = new Map<string, any>();
-      currentLocalItems.forEach(item => {
-        if (item && item.id && !deletedItemIds.has(item.id)) {
-          itemMap.set(item.id, item);
+        const idbKey = fieldToIdbKey[field];
+        if (idbKey) {
+          idbSet(idbKey, items).catch(() => {});
         }
-      });
-      items.forEach(item => {
-        if (item && item.id && !deletedItemIds.has(item.id)) {
-          itemMap.set(item.id, item);
-        }
-      });
-
-      const finalItems = Array.from(itemMap.values());
-
-      mergedSettings = {
-        ...mergedSettings,
-        [field]: finalItems
-      };
-      const idbKey = fieldToIdbKey[field];
-      if (idbKey) {
-        idbSet(idbKey, finalItems).catch(() => {});
+        triggerCallback();
       }
-      triggerCallback();
     }, (err) => {
-      if (isQuotaError(err)) markQuotaExhausted(err?.message);
-      console.warn(`Error in onSnapshot for settings/global/${field} (using cached):`, err?.message || err);
+      console.warn(`Error in onSnapshot for settings/global/${field}:`, err?.message || err);
     });
     unsubscribes.push(unsubCol);
   });
@@ -1247,13 +1141,8 @@ export const firebaseStorage = {
       ]);
 
       // Save general/global options if changed
-      if (globalChanged && !quotaState.isExhausted) {
+      if (globalChanged) {
         await safeFirestoreWrite("saveSettingsGlobal", () => setDoc(doc(db, "settings", "global"), globalSettings));
-      }
-
-      // Save complete settings bundle to single document for high-speed sync & new device hydration
-      if (!quotaState.isExhausted) {
-        await safeFirestoreWrite("saveSettingsBundle", () => setDoc(doc(db, "settings", "catalog_bundle"), updatedSettings));
       }
 
       // Sync to server-side cache for instant container-wide availability
@@ -1283,59 +1172,49 @@ export const firebaseStorage = {
         { id: "accessoryMaterials", items: (updatedSettings.accessoryMaterials || []) as any[], hasChanged: true },
       ];
 
-      // Parallel save of only subcollections that actually changed
-      if (!quotaState.isExhausted) {
-        await Promise.allSettled(
-          collectionsToSave
-            .filter((col) => col.hasChanged && !quotaState.isExhausted)
-            .map(async (col) => {
-              try {
-                const cachedCol = cached ? ((cached as any)[col.id] as any[]) : undefined;
-                const batchOps: ((batch: WriteBatch) => void)[] = [];
+      // Parallel save of subcollections to Firestore
+      await Promise.allSettled(
+        collectionsToSave
+          .filter((col) => col.hasChanged)
+          .map(async (col) => {
+            try {
+              const cachedCol = cached ? ((cached as any)[col.id] as any[]) : undefined;
+              const batchOps: ((batch: WriteBatch) => void)[] = [];
 
-                // 1. Write/update new and modified items only
-                col.items.forEach((item) => {
-                  const cachedItem = cachedCol?.find((x: any) => x.id === item.id);
-                  if (!cachedItem || !isMaterialItemEqual(item, cachedItem)) {
-                    const docRef = doc(db, "settings", "global", col.id, item.id);
-                    batchOps.push((batch) => batch.set(docRef, item));
+              // 1. Write/update new and modified items only
+              col.items.forEach((item) => {
+                const cachedItem = cachedCol?.find((x: any) => x.id === item.id);
+                if (!cachedItem || !isMaterialItemEqual(item, cachedItem)) {
+                  const docRef = doc(db, "settings", "global", col.id, item.id);
+                  batchOps.push((batch) => batch.set(docRef, item));
+                }
+              });
+
+              // 2. Delete items that were removed in this update or marked deleted
+              if (cachedCol) {
+                const newIds = new Set(col.items.map((item) => item.id));
+                cachedCol.forEach((oldItem: any) => {
+                  if (!newIds.has(oldItem.id)) {
+                    deletedItemIds.add(oldItem.id);
+                    const docRef = doc(db, "settings", "global", col.id, oldItem.id);
+                    batchOps.push((batch) => batch.delete(docRef));
                   }
                 });
-
-                // 2. Delete items that were removed in this update or marked deleted
-                if (cachedCol) {
-                  const newIds = new Set(col.items.map((item) => item.id));
-                  cachedCol.forEach((oldItem: any) => {
-                    if (!newIds.has(oldItem.id)) {
-                      deletedItemIds.add(oldItem.id);
-                      const docRef = doc(db, "settings", "global", col.id, oldItem.id);
-                      batchOps.push((batch) => batch.delete(docRef));
-                    }
-                  });
-                }
-
-                // 3. Perform fast atomic batch writes
-                if (batchOps.length > 0) {
-                  await withTimeout(commitBatchOperations(batchOps), 4000, undefined);
-                }
-
-                // 4. Permanently remove old legacy single-document structure if it still exists
-                deleteDoc(doc(db, "settings", col.id)).catch(() => {});
-              } catch (colErr: any) {
-                if (isQuotaError(colErr)) {
-                  markQuotaExhausted(colErr?.message);
-                }
               }
-            })
-        );
-      }
+
+              // 3. Perform fast atomic batch writes
+              if (batchOps.length > 0) {
+                await commitBatchOperations(batchOps);
+              }
+            } catch (colErr: any) {
+              console.warn(`Firestore save error for ${col.id}:`, colErr);
+            }
+          })
+      );
 
       if (onProgress) onProgress(95);
     } catch (err: any) {
-      if (isQuotaError(err)) {
-        markQuotaExhausted(err?.message);
-      }
-      console.warn("Firestore saveSettings quota/network notice (cached locally):", err?.message || err);
+      console.warn("Firestore saveSettings notice:", err?.message || err);
     }
 
     // Explicitly update cache with latest saved settings
@@ -1385,13 +1264,9 @@ export const firebaseStorage = {
     }
 
     // 2. Persist to Firestore directly in background without blocking UI
-    if (!quotaState.isExhausted) {
-      safeFirestoreWrite("saveSingleMaterial", () =>
-        setDoc(doc(db, "settings", "global", collectionKey, item.id), item)
-      ).catch(err => {
-        if (isQuotaError(err)) markQuotaExhausted(err?.message);
-      });
-    }
+    safeFirestoreWrite("saveSingleMaterial", () =>
+      setDoc(doc(db, "settings", "global", collectionKey, item.id), item)
+    );
   },
 
   async deleteSingleMaterial(
@@ -1426,13 +1301,9 @@ export const firebaseStorage = {
     }
 
     // 2. Delete from Firestore directly in background
-    if (!quotaState.isExhausted) {
-      safeFirestoreWrite("deleteSingleMaterial", () =>
-        deleteDoc(doc(db, "settings", "global", collectionKey, itemId))
-      ).catch(err => {
-        if (isQuotaError(err)) markQuotaExhausted(err?.message);
-      });
-    }
+    safeFirestoreWrite("deleteSingleMaterial", () =>
+      deleteDoc(doc(db, "settings", "global", collectionKey, itemId))
+    );
   },
 
   async incrementEmployeeAiUsage(employeeId: string): Promise<void> {
@@ -1448,19 +1319,17 @@ export const firebaseStorage = {
       }
     } catch {}
 
-    if (!quotaState.isExhausted) {
-      await safeFirestoreWrite("incrementEmployeeAiUsage", async () => {
-        const docRef = doc(db, "employees", employeeId);
-        const snap = await getDoc(docRef);
-        if (snap.exists()) {
-          const current = snap.data() as Employee;
-          await setDoc(docRef, {
-            ...current,
-            aiUsed: (current.aiUsed || 0) + 1
-          });
-        }
-      });
-    }
+    await safeFirestoreWrite("incrementEmployeeAiUsage", async () => {
+      const docRef = doc(db, "employees", employeeId);
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const current = snap.data() as Employee;
+        await setDoc(docRef, {
+          ...current,
+          aiUsed: (current.aiUsed || 0) + 1
+        });
+      }
+    });
   },
 
   /**
@@ -1518,7 +1387,7 @@ export const firebaseStorage = {
       }
     }
 
-    // 3. Save global settings & full bundle
+    // 3. Save global settings
     if (onProgress) onProgress("กำลังบันทึกการตั้งค่าระบบส่วนกลางขึ้นคลาวด์...", 68);
     const {
       styleMaterials,
@@ -1532,7 +1401,6 @@ export const firebaseStorage = {
     } = settings;
     try {
       await withTimeout(setDoc(doc(db, "settings", "global"), globalSettings), 5000, null);
-      await withTimeout(setDoc(doc(db, "settings", "catalog_bundle"), settings), 5000, null);
       
       fetch("/api/catalog/sync", {
         method: "POST",

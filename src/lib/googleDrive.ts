@@ -17,6 +17,7 @@ const DRIVE_FOLDER_KEY = "gdrive_curtain_swatch_folder_id";
 const SWATCH_FOLDER_NAME = "Curtain_Studio_Swatches";
 
 const GOOGLE_CLIENT_ID =
+  (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID ||
   (firebaseConfig as any).oAuthClientId ||
   "372903051160-0g2be3t4q578kik19sd95mut8lltab9m.apps.googleusercontent.com";
 

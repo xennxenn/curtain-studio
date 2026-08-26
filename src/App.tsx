@@ -124,7 +124,7 @@ export default function App() {
     };
   }, []);
 
-  // Automated Daily Backup to Google Drive if connected
+  // Automated Daily Backup to Google Drive if connected (Silent background task)
   useEffect(() => {
     if (!isDriveConnected()) return;
     if (jobs.length === 0 && !settings.solidFabricMaterials?.length) return;
@@ -133,24 +133,27 @@ export default function App() {
     const today = new Date().toISOString().slice(0, 10);
     const lastBackupDay = lastBackup ? lastBackup.slice(0, 10) : "";
 
-    // If backup has not run today, run it in background
+    // If backup has not run today, run it safely in background with non-blocking debounce
     if (lastBackupDay !== today) {
-      const timer = setTimeout(() => {
-        backupDatabaseToDrive({
-          settings,
-          jobs,
-          windows,
-          employees,
-        }).then((res) => {
-          if (res.success) {
+      const timer = setTimeout(async () => {
+        try {
+          const res = await backupDatabaseToDrive({
+            settings,
+            jobs,
+            windows,
+            employees,
+          });
+          if (res?.success) {
             console.log("Daily automatic Google Drive backup completed successfully.");
           }
-        }).catch((err) => console.warn("Notice during automated backup:", err));
-      }, 5000); // 5s debounce after app loads
+        } catch (err) {
+          console.warn("Notice during automated backup:", err);
+        }
+      }, 8000);
 
       return () => clearTimeout(timer);
     }
-  }, [jobs, windows, employees, settings]);
+  }, [jobs.length, windows.length, employees.length]);
 
   // Sync editingJob with real-time updates from jobs collection
   useEffect(() => {

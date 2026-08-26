@@ -68,60 +68,68 @@ export async function requestDriveAccessToken(): Promise<string> {
   const existing = getSavedDriveToken();
   if (existing) return existing;
 
-  // 1. Preferred Primary Method: Firebase Auth popup (always works on all domains without origin_mismatch)
-  try {
-    const provider = new GoogleAuthProvider();
-    provider.addScope("https://www.googleapis.com/auth/drive.file");
-    provider.setCustomParameters({
-      prompt: "select_account",
-    });
-
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (credential?.accessToken) {
-      saveDriveToken(credential.accessToken, 3500);
-      return credential.accessToken;
-    }
-  } catch (firebaseErr: any) {
-    console.warn("Firebase Auth Drive popup fallback check:", firebaseErr?.message || firebaseErr);
-    // If user cancelled, don't fallback to error out
-    if (firebaseErr?.code === "auth/popup-closed-by-user" || firebaseErr?.code === "auth/cancelled-popup-request") {
-      throw new Error("ผู้ใช้งานยกเลิกหน้าต่างล็อกอิน Google");
-    }
-  }
-
-  // 2. Secondary fallback via GIS
-  await loadGisScript();
-
-  return new Promise((resolve, reject) => {
+  const authPromise = (async () => {
+    // 1. Preferred Primary Method: Firebase Auth popup
     try {
-      const tokenClient = window.google?.accounts?.oauth2?.initTokenClient({
-        client_id: GOOGLE_CLIENT_ID,
-        scope: "https://www.googleapis.com/auth/drive.file",
-        callback: (resp: any) => {
-          if (resp && resp.access_token) {
-            saveDriveToken(resp.access_token, resp.expires_in || 3500);
-            resolve(resp.access_token);
-          } else if (resp && resp.error) {
-            reject(new Error(resp.error_description || resp.error));
-          } else {
-            reject(new Error("Failed to obtain Google Drive access token"));
-          }
-        },
-        error_callback: (err: any) => {
-          reject(err);
-        }
+      const provider = new GoogleAuthProvider();
+      provider.addScope("https://www.googleapis.com/auth/drive.file");
+      provider.setCustomParameters({
+        prompt: "select_account",
       });
 
-      if (!tokenClient) {
-        throw new Error("Google Identity Services client is not available.");
+      const result = await signInWithPopup(auth, provider);
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        saveDriveToken(credential.accessToken, 3500);
+        return credential.accessToken;
       }
-
-      tokenClient.requestAccessToken({ prompt: "" });
-    } catch (err) {
-      reject(err);
+    } catch (firebaseErr: any) {
+      console.warn("Firebase Auth Drive popup fallback check:", firebaseErr?.message || firebaseErr);
+      if (firebaseErr?.code === "auth/popup-closed-by-user" || firebaseErr?.code === "auth/cancelled-popup-request") {
+        throw new Error("ผู้ใช้งานยกเลิกหน้าต่างล็อกอิน Google");
+      }
     }
-  });
+
+    // 2. Secondary fallback via GIS
+    await loadGisScript();
+
+    return new Promise<string>((resolve, reject) => {
+      try {
+        const tokenClient = window.google?.accounts?.oauth2?.initTokenClient({
+          client_id: GOOGLE_CLIENT_ID,
+          scope: "https://www.googleapis.com/auth/drive.file",
+          callback: (resp: any) => {
+            if (resp && resp.access_token) {
+              saveDriveToken(resp.access_token, resp.expires_in || 3500);
+              resolve(resp.access_token);
+            } else if (resp && resp.error) {
+              reject(new Error(resp.error_description || resp.error));
+            } else {
+              reject(new Error("Failed to obtain Google Drive access token"));
+            }
+          },
+          error_callback: (err: any) => {
+            reject(err);
+          }
+        });
+
+        if (!tokenClient) {
+          throw new Error("Google Identity Services client is not available.");
+        }
+
+        tokenClient.requestAccessToken({ prompt: "" });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  })();
+
+  // Hard 20-second timeout race to prevent infinite hanging
+  const timeoutPromise = new Promise<string>((_, reject) =>
+    setTimeout(() => reject(new Error("หมดเวลาการเชื่อมต่อ Google Drive (Timeout 20 วินาที)")), 20000)
+  );
+
+  return Promise.race([authPromise, timeoutPromise]);
 }
 
 function loadGisScript(): Promise<void> {
@@ -152,14 +160,19 @@ export async function getOrCreateSwatchFolder(accessToken: string): Promise<stri
     }
   } catch {}
 
-  // 1. Search for existing folder
+  // 1. Search for existing folder with 6s timeout
   try {
     const query = encodeURIComponent(`name = '${SWATCH_FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
     const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)`;
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+
     const searchRes = await fetch(searchUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
+      signal: controller.signal,
     });
+    clearTimeout(timer);
 
     if (searchRes.ok) {
       const data = await searchRes.json();
@@ -175,7 +188,10 @@ export async function getOrCreateSwatchFolder(accessToken: string): Promise<stri
     console.warn("Notice searching Drive folder:", sErr);
   }
 
-  // 2. Create folder if not found
+  // 2. Create folder if not found with 8s timeout
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+
   const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
     method: "POST",
     headers: {
@@ -186,7 +202,9 @@ export async function getOrCreateSwatchFolder(accessToken: string): Promise<stri
       name: SWATCH_FOLDER_NAME,
       mimeType: "application/vnd.google-apps.folder",
     }),
+    signal: controller.signal,
   });
+  clearTimeout(timer);
 
   if (!createRes.ok) {
     throw new Error("Failed to create swatch folder in Google Drive");
@@ -198,8 +216,6 @@ export async function getOrCreateSwatchFolder(accessToken: string): Promise<stri
     localStorage.setItem(DRIVE_FOLDER_KEY, cachedFolderId!);
   } catch {}
 
-  // Make folder publicly viewable for image reading (anyone with link can view)
-  // Sub-items placed in this folder will automatically be readable
   fetch(`https://www.googleapis.com/drive/v3/files/${cachedFolderId}/permissions`, {
     method: "POST",
     headers: {
@@ -366,10 +382,7 @@ export async function backupDatabaseToDrive(payload: {
   employees?: any[];
 }): Promise<{ success: boolean; fileId?: string; error?: string }> {
   try {
-    let token = getSavedDriveToken();
-    if (!token) {
-      token = await requestDriveAccessToken();
-    }
+    const token = getSavedDriveToken();
     if (!token) {
       return { success: false, error: "ไม่ได้เข้าสู่ระบบ Google Drive" };
     }
@@ -399,14 +412,19 @@ export async function backupDatabaseToDrive(payload: {
     );
     form.append("file", blob);
 
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12000);
+
     const uploadRes = await fetch(
       "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
       {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
         body: form,
+        signal: controller.signal,
       }
     );
+    clearTimeout(timer);
 
     if (!uploadRes.ok) {
       throw new Error(`HTTP ${uploadRes.status}: ไม่สามารถอัปโหลดไฟล์สำรองข้อมูลได้`);
@@ -426,10 +444,7 @@ export async function backupDatabaseToDrive(payload: {
  */
 export async function listBackupsFromDrive(): Promise<{ id: string; name: string; createdTime: string; size?: string }[]> {
   try {
-    let token = getSavedDriveToken();
-    if (!token) {
-      token = await requestDriveAccessToken();
-    }
+    const token = getSavedDriveToken();
     if (!token) return [];
 
     let folderId: string | null = null;
@@ -446,13 +461,17 @@ export async function listBackupsFromDrive(): Promise<{ id: string; name: string
           `'${folderId}' in parents and trashed = false`
         );
         const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,createdTime,size,mimeType)&orderBy=createdTime desc&pageSize=50`;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
         const res = await fetch(searchUrl, {
           headers: { Authorization: `Bearer ${token}` },
+          signal: controller.signal,
         });
+        clearTimeout(timer);
         if (res.ok) {
-          const data = await res.json();
-          (data.files || []).forEach((f: any) => {
-            if (f.name.endsWith(".json") || f.mimeType === "application/json") {
+          const data = await searchResJsonSafe(res);
+          (data?.files || []).forEach((f: any) => {
+            if (f.name?.endsWith(".json") || f.mimeType === "application/json") {
               fileMap.set(f.id, {
                 id: f.id,
                 name: f.name,
@@ -473,13 +492,17 @@ export async function listBackupsFromDrive(): Promise<{ id: string; name: string
         `trashed = false and (name contains 'Curtain_Studio' or name contains 'Curtain' or name contains 'Backup' or name contains 'backup')`
       );
       const globalSearchUrl = `https://www.googleapis.com/drive/v3/files?q=${globalQuery}&fields=files(id,name,createdTime,size,mimeType)&orderBy=createdTime desc&pageSize=50`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
       const gRes = await fetch(globalSearchUrl, {
         headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
       });
+      clearTimeout(timer);
       if (gRes.ok) {
-        const data = await gRes.json();
-        (data.files || []).forEach((f: any) => {
-          if (f.name.endsWith(".json") || f.mimeType === "application/json") {
+        const data = await searchResJsonSafe(gRes);
+        (data?.files || []).forEach((f: any) => {
+          if (f.name?.endsWith(".json") || f.mimeType === "application/json") {
             if (!fileMap.has(f.id)) {
               fileMap.set(f.id, {
                 id: f.id,
@@ -506,6 +529,14 @@ export async function listBackupsFromDrive(): Promise<{ id: string; name: string
   } catch (err) {
     console.warn("List backups from drive error:", err);
     return [];
+  }
+}
+
+async function searchResJsonSafe(res: Response): Promise<any> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
   }
 }
 

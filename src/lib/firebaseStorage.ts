@@ -553,12 +553,43 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
     callback({ ...mergedSettings });
   };
 
-  // 1. Subscribe to global document (company logo, distances, patterns, apiKey, etc.)
+  // 1. Subscribe to catalog_bundle and global document (authoritative fast snapshot for whole catalog)
+  const bundleRef = doc(db, "settings", "catalog_bundle");
+  const unsubBundle = onSnapshot(bundleRef, (snap) => {
+    if (snap.exists()) {
+      const data = snap.data() as Partial<Settings>;
+      if (data) {
+        subDocFields.forEach((field) => {
+          if (Array.isArray((data as any)[field])) {
+            (mergedSettings as any)[field] = (data as any)[field];
+          }
+        });
+        mergedSettings = {
+          ...mergedSettings,
+          ...data,
+        };
+        isGlobalLoaded = true;
+        triggerCallback();
+      }
+    }
+  }, (err) => {
+    console.warn("Notice for settings/catalog_bundle:", err?.message || err);
+  });
+  unsubscribes.push(unsubBundle);
+
+  // 2. Subscribe to global document (company logo, distances, patterns, apiKey, etc.)
   const globalRef = doc(db, "settings", "global");
   const unsubGlobal = onSnapshot(globalRef, (snap) => {
     if (snap.exists()) {
       const data = snap.data();
       const currentApiKey = mergedSettings.customGeminiApiKey || getDedicatedGeminiApiKey();
+
+      subDocFields.forEach((field) => {
+        if (Array.isArray(data[field])) {
+          (mergedSettings as any)[field] = data[field];
+        }
+      });
+
       mergedSettings = {
         ...mergedSettings,
         ...data,
@@ -580,13 +611,12 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
   });
   unsubscribes.push(unsubGlobal);
 
-  // 2. Subscribe to each subcollection in Firestore (authoritative real-time sync for fabrics, blinds, styles, etc.)
+  // 3. Subscribe to each subcollection in Firestore (authoritative real-time sync for fabrics, blinds, styles, etc.)
   subDocFields.forEach((field) => {
     const colRef = collection(db, "settings", "global", field);
 
     const unsubCol = onSnapshot(colRef, (snapshot) => {
       if (!snapshot.empty) {
-        // Authoritative Firestore items - replaces mock/default items cleanly
         const items = snapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data()
@@ -1140,9 +1170,10 @@ export const firebaseStorage = {
         idbSet(PERMANENT_KEYS.ACCESSORY_MATERIALS, updatedSettings.accessoryMaterials || []),
       ]);
 
-      // Save general/global options if changed
+      // Save general/global options and bundle to Firestore
+      await safeFirestoreWrite("saveSettingsBundle", () => setDoc(doc(db, "settings", "catalog_bundle"), updatedSettings));
       if (globalChanged) {
-        await safeFirestoreWrite("saveSettingsGlobal", () => setDoc(doc(db, "settings", "global"), globalSettings));
+        await safeFirestoreWrite("saveSettingsGlobal", () => setDoc(doc(db, "settings", "global"), updatedSettings));
       }
 
       // Sync to server-side cache for instant container-wide availability
@@ -1332,6 +1363,31 @@ export const firebaseStorage = {
     });
   },
 
+  async saveAllToFirestore(
+    settings: Settings,
+    employees?: Employee[],
+    onProgress?: (msg: string, percent: number) => void
+  ): Promise<void> {
+    if (onProgress) onProgress("กำลังบันทึกข้อมูลและแคตตาล็อกขึ้นคลาวด์กลาง...", 20);
+    await this.saveSettings(settings, (pct) => {
+      if (onProgress) onProgress(`กำลังซิงค์แคตตาล็อกวัสดุ (${pct}%)...`, Math.round(pct * 0.7));
+    });
+    if (employees && employees.length > 0) {
+      if (onProgress) onProgress("กำลังซิงค์รายชื่อพนักงานและสิทธิ์การใช้งาน...", 80);
+      const empBatchOps: ((batch: WriteBatch) => void)[] = [];
+      employees.forEach((emp) => {
+        if (emp && emp.id) {
+          const docRef = doc(db, "employees", emp.id);
+          empBatchOps.push((batch) => batch.set(docRef, emp));
+        }
+      });
+      if (empBatchOps.length > 0) {
+        await commitBatchOperations(empBatchOps);
+      }
+    }
+    if (onProgress) onProgress("✓ ซิงค์ฐานข้อมูลทั้งหมดขึ้นคลาวด์เรียบร้อยแล้ว!", 100);
+  },
+
   /**
    * Force push all local datasets (fabrics, sheers, blinds, rollers, tapes, styles, hems, tracks, accessories, jobs, windows, employees)
    * to Firestore shared cloud database so all employee devices receive 100% of the centralized catalog in Realtime!
@@ -1400,7 +1456,8 @@ export const firebaseStorage = {
       ...globalSettings
     } = settings;
     try {
-      await withTimeout(setDoc(doc(db, "settings", "global"), globalSettings), 5000, null);
+      await withTimeout(setDoc(doc(db, "settings", "catalog_bundle"), settings), 5000, null);
+      await withTimeout(setDoc(doc(db, "settings", "global"), settings), 5000, null);
       
       fetch("/api/catalog/sync", {
         method: "POST",

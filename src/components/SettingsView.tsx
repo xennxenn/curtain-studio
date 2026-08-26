@@ -150,6 +150,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     showToast(`✓ บันทึกแก้ไขข้อความ "${updatedItem.name}${updatedItem.colorName ? ' / ' + updatedItem.colorName : ''}" เรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)`, "success");
   };
 
+  const [isForceSyncing, setIsForceSyncing] = useState<boolean>(false);
+  const [forceSyncProgress, setForceSyncProgress] = useState<{ text: string; pct: number } | null>(null);
+
+  const handleForceSyncCloud = async () => {
+    setIsForceSyncing(true);
+    setForceSyncProgress({ text: "กำลังเตรียมข้อมูลและเชื่อมต่อคลาวด์กลาง...", pct: 5 });
+    try {
+      await firebaseStorage.saveAllToFirestore(settings, employees, (msg, pct) => {
+        setForceSyncProgress({ text: msg, pct });
+      });
+      showToast("✓ ซิงค์ข้อมูลทั้งหมดขึ้นฐานข้อมูลคลาวด์กลาง (Firebase) สำเร็จแล้ว! ทุกเครื่องเห็นข้อมูลตรงกันทันที", "success");
+    } catch (err: any) {
+      showToast(`ซิงค์ไม่สำเร็จ: ${err?.message || err}`, "error");
+    } finally {
+      setIsForceSyncing(false);
+      setForceSyncProgress(null);
+    }
+  };
+
   const [driveConnected, setDriveConnected] = useState<boolean>(false);
   const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
   const [isBackingUpDrive, setIsBackingUpDrive] = useState<boolean>(false);
@@ -2312,113 +2331,80 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   return (
     <div className="space-y-8 animate-fade-in">
 
-      {/* Google Drive Cloud Swatch Storage Status Card */}
-      <div className="bg-gradient-to-br from-slate-900 via-indigo-950/80 to-slate-950 border border-indigo-500/30 rounded-3xl p-5 md:p-6 text-white shadow-xl">
+      {/* Firebase Cloud Real-Time Database Status Card */}
+      <div className="bg-gradient-to-br from-slate-900 via-indigo-950/90 to-slate-950 border border-indigo-500/30 rounded-3xl p-5 md:p-6 text-white shadow-xl">
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="flex items-start gap-4">
-            <div className="p-3 bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 rounded-2xl shrink-0">
-              <HardDrive className="w-6 h-6" />
+            <div className="p-3 bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-2xl shrink-0">
+              <UploadCloud className="w-6 h-6" />
             </div>
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-extrabold text-base text-indigo-100">
-                  ระบบสำรองข้อมูลเพิ่มเติม Google Drive (Personal Auto-Backup)
+                  ระบบฐานข้อมูลคลาวด์กลาง (Firebase Real-Time Cloud Sync)
                 </h3>
-                {driveConnected ? (
-                  <span className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
-                    <Check className="w-3 h-3" />
-                    <span>เชื่อมต่อแล้ว: naruecha.psy@gmail.com</span>
-                  </span>
-                ) : (
-                  <span className="bg-slate-500/20 border border-slate-500/40 text-slate-300 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
-                    <span>(ตัวเลือกเสริม - ฐานข้อมูลกลาง Firebase เชื่อมต่อ Real-time ตลอดเวลาอยู่แล้ว)</span>
-                  </span>
-                )}
+                <span className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-black px-2.5 py-0.5 rounded-full inline-flex items-center gap-1.5 shadow-sm">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                  <span>เชื่อมต่อ Real-time อัตโนมัติทุกเครื่อง</span>
+                </span>
               </div>
-              <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
-                {driveConnected
-                  ? "✓ ระบบซิงค์ข้อมูลเรียลไทม์ผ่าน Firebase Cloud พร้อมสำรองสำเนาไฟล์ JSON และรูปภาพสวอชผ้าขึ้น Google Drive ส่วนตัว (naruecha.psy@gmail.com) อัตโนมัติทุกวัน"
-                  : "💡 ฐานข้อมูลกลาง Firebase Cloud และโควต้า AI ทำงานเชื่อมต่อ Real-time อัตโนมัติในทุกเครื่องของพนักงานอยู่แล้ว (การเชื่อมต่อ Google Drive ด้านขวานี้เป็นเพียงตัวเลือกเสริมสำหรับแอดมินที่ต้องการ Backup ไฟล์ลง Drive ส่วนตัวเพิ่มเติม)"}
+              <p className="text-xs text-slate-300 mt-1.5 max-w-2xl leading-relaxed">
+                ✓ ฐานข้อมูลคลาวด์กลางเชื่อมต่อแบบ Real-time ตลอดเวลา ไม่ว่าพนักงานจะเปิดเครื่องไหน หรือสาขาไหน ข้อมูลแคตตาล็อก สวอชผ้า รายการงาน (Jobs) และผู้ใช้งาน จะแสดงผลตรงกันทันที 100%
               </p>
+              {forceSyncProgress && (
+                <div className="mt-3 bg-indigo-900/60 border border-indigo-400/30 rounded-xl p-3 max-w-md">
+                  <div className="flex items-center justify-between text-xs font-bold mb-1.5">
+                    <span className="text-indigo-200">{forceSyncProgress.text}</span>
+                    <span className="text-emerald-400">{forceSyncProgress.pct}%</span>
+                  </div>
+                  <div className="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                    <div
+                      className="bg-emerald-500 h-full transition-all duration-300 rounded-full"
+                      style={{ width: `${forceSyncProgress.pct}%` }}
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
-          <div className="shrink-0 self-end md:self-auto flex flex-wrap items-center gap-2">
-            {driveConnected ? (
-              <>
-                <button
-                  type="button"
-                  onClick={handleManualBackupToDrive}
-                  disabled={isBackingUpDrive}
-                  className="px-3.5 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xs transition inline-flex items-center gap-1.5 shadow-lg shadow-emerald-500/25 cursor-pointer disabled:opacity-50"
-                  title="สำรองฐานข้อมูลทั้งหมดขึ้น Google Drive ตอนนี้"
-                >
-                  {isBackingUpDrive ? (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>กำลังสำรอง...</span>
-                    </>
-                  ) : (
-                    <>
-                      <UploadCloud className="w-3.5 h-3.5" />
-                      <span>สำรองข้อมูลขึ้น Drive</span>
-                    </>
-                  )}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleOpenDriveRestoreModal}
-                  className="px-3.5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs transition inline-flex items-center gap-1.5 shadow-md shadow-indigo-600/30 cursor-pointer"
-                  title="เปิดดูและกู้คืนไฟล์สำรองข้อมูลจาก Google Drive"
-                >
-                  <RefreshCw className="w-3.5 h-3.5 text-indigo-200" />
-                  <span>กู้คืนข้อมูลจาก Drive</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDisconnectDrive}
-                  className="px-3 py-2 rounded-xl bg-white/10 hover:bg-rose-500/20 text-slate-300 hover:text-rose-200 border border-white/10 hover:border-rose-500/30 text-xs font-bold transition cursor-pointer"
-                >
-                  ยกเลิกเชื่อมต่อ
-                </button>
-              </>
-            ) : (
-              <button
-                type="button"
-                onClick={handleConnectDrive}
-                disabled={isConnectingDrive}
-                className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xs transition inline-flex items-center gap-1.5 shadow-lg shadow-emerald-500/25 cursor-pointer disabled:opacity-50"
-              >
-                {isConnectingDrive ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>กำลังเชื่อมต่อ...</span>
-                  </>
-                ) : (
-                  <>
-                    <HardDrive className="w-4 h-4" />
-                    <span>เชื่อมต่อ Google Drive</span>
-                  </>
-                )}
-              </button>
-            )}
+          <div className="shrink-0 self-end md:self-auto flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={handleForceSyncCloud}
+              disabled={isForceSyncing}
+              className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xs transition inline-flex items-center gap-1.5 shadow-lg shadow-emerald-500/25 cursor-pointer disabled:opacity-50"
+              title="สั่งให้ระบบซิงค์และอัปเดตข้อมูลทุกอย่างขึ้นคลาวด์กลางทันที"
+            >
+              {isForceSyncing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>กำลังซิงค์...</span>
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="w-4 h-4" />
+                  <span>ซิงค์ข้อมูลขึ้นคลาวด์ทันที</span>
+                </>
+              )}
+            </button>
 
             {/* Offline / Local JSON Backup and Restore */}
-            <div className="flex items-center gap-1.5 pl-2 border-l border-white/10">
+            <div className="flex items-center gap-1.5 pl-2 border-l border-white/15">
               <button
                 type="button"
                 onClick={handleExportJsonBackup}
-                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition inline-flex items-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition inline-flex items-center gap-1.5 cursor-pointer shadow-sm"
                 title="ดาวน์โหลดไฟล์สำรองข้อมูล JSON ลงเครื่องคอมพิวเตอร์"
               >
-                <Download className="w-3.5 h-3.5 text-slate-300" />
+                <Download className="w-3.5 h-3.5 text-slate-200" />
                 <span>ส่งออก JSON</span>
               </button>
               <label
-                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition inline-flex items-center gap-1.5 cursor-pointer"
+                className="px-3.5 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold transition inline-flex items-center gap-1.5 cursor-pointer shadow-sm"
                 title="เลือกไฟล์ JSON เพื่อนำเข้าข้อมูลและกู้คืนเข้าสู่ระบบ"
               >
-                <FolderUp className="w-3.5 h-3.5 text-slate-300" />
+                <FolderUp className="w-3.5 h-3.5 text-slate-200" />
                 <span>นำเข้า JSON</span>
                 <input
                   type="file"
@@ -5763,113 +5749,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </button>
               </div>
             </form>
-          </div>
-        </div>
-      )}
-
-      {/* Google Drive Restore Modal */}
-      {isDriveRestoreModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white rounded-3xl p-6 md:p-8 max-w-xl w-full shadow-2xl border border-slate-100 flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
-              <div className="flex items-center gap-3">
-                <div className="p-3 bg-indigo-50 text-indigo-600 rounded-2xl">
-                  <RefreshCw className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-black text-slate-900">
-                    กู้คืนข้อมูลจาก Google Drive
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    เลือกเวอร์ชันไฟล์สำรองข้อมูลที่ต้องการกู้คืนกลับสู่ฐานข้อมูลระบบ
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsDriveRestoreModalOpen(false)}
-                className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {restoreProgressStatus && (
-              <div className="p-3 mb-3 bg-indigo-50 border border-indigo-200 text-indigo-900 rounded-2xl flex items-center gap-3 animate-pulse">
-                <Loader2 className="w-4 h-4 animate-spin text-indigo-600 shrink-0" />
-                <span className="text-xs font-bold">{restoreProgressStatus}</span>
-              </div>
-            )}
-
-            <div className="flex-1 overflow-y-auto py-4 space-y-3">
-              {isFetchingDriveBackups ? (
-                <div className="py-12 text-center text-slate-500 space-y-3">
-                  <Loader2 className="w-8 h-8 animate-spin mx-auto text-indigo-600" />
-                  <p className="text-xs font-bold">กำลังค้นหาไฟล์สำรองข้อมูลบน Google Drive...</p>
-                </div>
-              ) : driveBackupsList.length === 0 ? (
-                <div className="py-12 text-center text-slate-400 space-y-2">
-                  <AlertCircle className="w-10 h-10 mx-auto text-slate-300" />
-                  <p className="text-sm font-bold text-slate-600">ไม่พบไฟล์สำรองข้อมูลอัตโนมัติบน Google Drive</p>
-                  <p className="text-xs text-slate-400 max-w-xs mx-auto">
-                    หากคุณมีไฟล์สำรอง JSON บนเครื่อง สามารถใช้ปุ่ม "นำเข้า JSON" เพื่อกู้คืนได้ทันที
-                  </p>
-                </div>
-              ) : (
-                driveBackupsList.map((file) => (
-                  <div
-                    key={file.id}
-                    className="p-4 rounded-2xl border border-slate-200 hover:border-indigo-400 bg-slate-50 hover:bg-indigo-50/40 transition flex items-center justify-between gap-3"
-                  >
-                    <div className="min-w-0 flex items-center gap-3">
-                      <div className="p-2.5 bg-white text-indigo-600 rounded-xl border border-slate-200 shadow-sm shrink-0">
-                        <FileText className="w-5 h-5" />
-                      </div>
-                      <div className="truncate">
-                        <div className="text-xs font-black text-slate-800 truncate">{file.name}</div>
-                        <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-2">
-                          <span>{file.createdTime ? new Date(file.createdTime).toLocaleString("th-TH") : "ไม่ระบุเวลา"}</span>
-                          {file.size && (
-                            <span className="px-1.5 py-0.2 rounded bg-slate-200 text-slate-600 font-mono text-[9px]">
-                              {(parseInt(file.size) / 1024).toFixed(1)} KB
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      disabled={isRestoringBackup}
-                      onClick={() => handleRestoreDriveBackupFile(file.id, file.name)}
-                      className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-black text-xs transition shrink-0 shadow-md shadow-indigo-600/20 inline-flex items-center gap-1.5 cursor-pointer"
-                    >
-                      {isRestoringBackup ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          <span>กำลังกู้คืน...</span>
-                        </>
-                      ) : (
-                        <>
-                          <RefreshCw className="w-3.5 h-3.5" />
-                          <span>กู้คืนเวอร์ชันนี้</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="pt-3 border-t border-slate-100 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setIsDriveRestoreModalOpen(false)}
-                className="px-4 py-2 rounded-xl border border-slate-200 hover:bg-slate-100 text-slate-700 text-xs font-bold transition"
-              >
-                ปิดหน้าต่าง
-              </button>
-            </div>
           </div>
         </div>
       )}

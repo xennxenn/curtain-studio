@@ -142,6 +142,15 @@ export async function saveDedicatedGeminiApiKey(apiKey: string): Promise<void> {
     console.warn("Failed to write API key to localStorage:", e);
   }
   await idbSet(PERMANENT_KEYS.GEMINI_API_KEY, cleanKey);
+
+  // Sync with backend server memory so all requests and clients benefit immediately
+  try {
+    fetch("/api/config/gemini-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: cleanKey }),
+    }).catch(() => {});
+  } catch {}
 }
 
 export async function removeDedicatedGeminiApiKey(): Promise<void> {
@@ -151,4 +160,11 @@ export async function removeDedicatedGeminiApiKey(): Promise<void> {
     }
   } catch {}
   await idbDelete(PERMANENT_KEYS.GEMINI_API_KEY);
+  try {
+    fetch("/api/config/gemini-key", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "" }),
+    }).catch(() => {});
+  } catch {}
 }

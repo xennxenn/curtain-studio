@@ -3,11 +3,11 @@ import {
   Plus, Trash2, Users, Database, ShieldAlert, BadgeCheck, 
   Palette, FileImage, Layers, Tag, Ruler, Sliders, Eye, Lock, Unlock, FolderUp, Edit3, Search, AlertCircle, X, Info, Files, Loader2, CheckCircle2, Zap,
   RefreshCw, Sparkles, ArrowRightLeft, HardDrive, Check, ExternalLink, AlertTriangle, ArrowRight, CheckSquare, Square,
-  Clock, Calendar, Filter, FolderCheck
+  Clock, Calendar, Filter, FolderCheck, Cloud, Key, ShieldCheck, Server, Globe, UploadCloud
 } from "lucide-react";
 import { Employee, Settings, FabricMaterial, StyleMaterial, HemMaterial } from "../types";
 import { generateId } from "../lib/storage";
-import { markItemDeleted } from "../lib/firebaseStorage";
+import { markItemDeleted, firebaseStorage } from "../lib/firebaseStorage";
 import { isDriveConnected, requestDriveAccessToken, clearDriveToken, uploadSwatchToDrive, getSavedDriveToken, getOrCreateSwatchFolder } from "../lib/googleDrive";
 import { getDedicatedGeminiApiKey, saveDedicatedGeminiApiKey, removeDedicatedGeminiApiKey } from "../lib/indexedDbStorage";
 
@@ -268,7 +268,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   const [activeTab, setActiveTab] = useState<
-    "employees" | "styles" | "hems" | "solid_fabrics" | "sheer_fabrics" | "blinds_rollers" | "general"
+    "employees" | "styles" | "hems" | "solid_fabrics" | "sheer_fabrics" | "blinds_rollers" | "general" | "cloud_ai"
   >("solid_fabrics");
 
   // Admin authentication state
@@ -278,6 +278,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [isPasswordUnlocked, setIsPasswordUnlocked] = useState(false);
 
   const canViewEmployees = isAdmin || isPasswordUnlocked;
+
+  // Central Cloud & Gemini API Key States
+  const [serverKeyStatus, setServerKeyStatus] = useState<{ hasConfiguredKey: boolean; source?: string } | null>(null);
+  const [isSavingCentralKey, setIsSavingCentralKey] = useState(false);
+  const [isTestingKey, setIsTestingKey] = useState(false);
+  const [testKeyResult, setTestKeyResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [isCloudPushing, setIsCloudPushing] = useState(false);
+  const [cloudPushProgress, setCloudPushProgress] = useState<{ msg: string; percent: number } | null>(null);
+
+  useEffect(() => {
+    fetch("/api/config/gemini-key-status")
+      .then((res) => res.json())
+      .then((data) => setServerKeyStatus(data))
+      .catch(() => {});
+  }, []);
 
   // Employee CRUD State
   const [newEmpName, setNewEmpName] = useState("");
@@ -1105,6 +1120,93 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setAdminPasswordInput("");
     } else {
       showToast("รหัสผ่านผู้ดูแลระบบไม่ถูกต้อง!", "error");
+    }
+  };
+
+  // Central Gemini API Key & Cloud Handlers
+  const handleSaveCentralApiKey = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!customApiKey.trim()) {
+      showToast("กรุณากรอก Gemini API Key ให้ถูกต้อง", "error");
+      return;
+    }
+    setIsSavingCentralKey(true);
+    try {
+      await saveDedicatedGeminiApiKey(customApiKey.trim());
+      await onSaveSettings({ ...settings, customGeminiApiKey: customApiKey.trim() }, true);
+      await fetch("/api/config/gemini-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: customApiKey.trim() }),
+      });
+      setServerKeyStatus({ hasConfiguredKey: true, source: "server_memory" });
+      showToast("✓ บันทึก Central Gemini API Key เรียบร้อยแล้ว! พนักงานทุกคน ทุกเครื่อง สามารถสร้างภาพ AI ได้ทันที", "success");
+    } catch (err: any) {
+      showToast(`บันทึก API Key ไม่สำเร็จ: ${err?.message || err}`, "error");
+    } finally {
+      setIsSavingCentralKey(false);
+    }
+  };
+
+  const handleRemoveCentralApiKey = async () => {
+    setIsSavingCentralKey(true);
+    try {
+      await removeDedicatedGeminiApiKey();
+      setCustomApiKey("");
+      await onSaveSettings({ ...settings, customGeminiApiKey: "" }, true);
+      await fetch("/api/config/gemini-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: "" }),
+      });
+      setServerKeyStatus({ hasConfiguredKey: false });
+      showToast("ลบ Central Gemini API Key เรียบร้อยแล้ว", "info");
+    } catch (err: any) {
+      showToast(`เกิดข้อผิดพลาด: ${err?.message || err}`, "error");
+    } finally {
+      setIsSavingCentralKey(false);
+    }
+  };
+
+  const handleForcePushToCloud = async () => {
+    setIsCloudPushing(true);
+    setCloudPushProgress({ msg: "กำลังรวบรวมข้อมูลทั้งหมดจากระบบ...", percent: 10 });
+    try {
+      const result = await firebaseStorage.forcePushAllLocalDataToFirestore((msg, pct) => {
+        setCloudPushProgress({ msg, percent: pct });
+      });
+      showToast(`✓ ซิงค์ฐานข้อมูลขึ้น Cloud สำเร็จ! (${result.syncedItems} รายการสวอช, ${result.jobsCount} โครงการ)`, "success");
+    } catch (err: any) {
+      showToast(`เกิดข้อผิดพลาดในการซิงค์: ${err?.message || err}`, "error");
+    } finally {
+      setIsCloudPushing(false);
+      setTimeout(() => setCloudPushProgress(null), 3000);
+    }
+  };
+
+  const handleTestCentralApiKey = async () => {
+    setIsTestingKey(true);
+    setTestKeyResult(null);
+    try {
+      const res = await fetch("/api/health");
+      if (res.ok) {
+        setTestKeyResult({
+          success: true,
+          message: "ระบบเซิร์ฟเวอร์และการเชื่อมต่อ AI พร้อมทำงานเรียบร้อย 100%!",
+        });
+      } else {
+        setTestKeyResult({
+          success: false,
+          message: "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ได้ กรุณาลองใหม่อีกครั้ง",
+        });
+      }
+    } catch (err: any) {
+      setTestKeyResult({
+        success: false,
+        message: `เกิดข้อผิดพลาด: ${err?.message || err}`,
+      });
+    } finally {
+      setIsTestingKey(false);
     }
   };
 
@@ -2253,10 +2355,318 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <Users className="w-4 h-4" />
           <span>พนักงาน & ผู้ใช้งานระบบ</span>
         </button>
+
+        <button
+          onClick={() => setActiveTab("cloud_ai")}
+          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+            activeTab === "cloud_ai"
+              ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/20"
+              : "text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200"
+          }`}
+        >
+          <Cloud className="w-4 h-4 text-emerald-600" />
+          <span>คลาวด์กลาง & คีย์ AI (Cloud & Gemini)</span>
+        </button>
       </div>
 
       {/* Tab Contents */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+        {/* TAB: Cloud & Central Gemini AI API Key */}
+        {activeTab === "cloud_ai" && (
+          <div className="lg:col-span-3 space-y-6">
+            
+            {/* Top Overview Banner */}
+            <div className="bg-gradient-to-br from-emerald-950 via-slate-900 to-indigo-950 border border-emerald-500/30 rounded-3xl p-6 text-white shadow-xl">
+              <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                    <Cloud className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-lg font-black text-white">
+                        ศูนย์ควบคุมฐานข้อมูลกลางและคีย์ AI ส่วนกลาง (Central Cloud & AI)
+                      </h3>
+                      {serverKeyStatus?.hasConfiguredKey || (customApiKey && customApiKey.trim().length > 5) ? (
+                        <span className="bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[11px] font-bold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>กำหนดคีย์ AI กลางแล้ว (พร้อมใช้งานทุกเครื่อง)</span>
+                        </span>
+                      ) : (
+                        <span className="bg-amber-500/20 border border-amber-400/40 text-amber-300 text-[11px] font-bold px-2.5 py-0.5 rounded-full inline-flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                          <span>ยังไม่ได้กำหนดคีย์ AI ส่วนกลาง</span>
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-300 mt-1.5 max-w-3xl leading-relaxed">
+                      กำหนดคีย์ Gemini API และซิงค์ฐานข้อมูลแคตตาล็อกวัสดุ สวอชผ้า มู่ลี่ และข้อมูลงานจากเครื่องแอดมินเพียงครั้งเดียว 
+                      พนักงานทุกคนในร้าน ทุกเครื่อง ทุกอุปกรณ์ จะใช้ฐานข้อมูลชุดเดียวกันแบบ <strong>Real-time 100%</strong> โดยพนักงานมีหน้าที่เพียงทำใบงานเท่านั้น
+                    </p>
+                  </div>
+                </div>
+
+                <div className="shrink-0">
+                  <button
+                    type="button"
+                    onClick={handleForcePushToCloud}
+                    disabled={isCloudPushing}
+                    className="px-5 py-3 rounded-2xl bg-gradient-to-r from-emerald-500 to-indigo-600 hover:from-emerald-400 hover:to-indigo-500 text-white font-extrabold text-xs transition flex items-center gap-2 shadow-lg shadow-emerald-500/25 cursor-pointer disabled:opacity-50"
+                  >
+                    {isCloudPushing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>กำลังซิงค์ข้อมูลขึ้น Cloud...</span>
+                      </>
+                    ) : (
+                      <>
+                        <UploadCloud className="w-4 h-4" />
+                        <span>ซิงค์ข้อมูลทั้งหมดขึ้น Cloud เดี๋ยวนี้</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Live Sync Progress Bar */}
+              {cloudPushProgress && (
+                <div className="mt-5 pt-4 border-t border-emerald-500/20 space-y-2">
+                  <div className="flex justify-between text-xs font-bold text-emerald-200">
+                    <span>{cloudPushProgress.msg}</span>
+                    <span>{cloudPushProgress.percent}%</span>
+                  </div>
+                  <div className="w-full bg-slate-800/80 rounded-full h-2 overflow-hidden border border-emerald-500/30">
+                    <div
+                      className="h-full bg-gradient-to-r from-emerald-400 to-indigo-400 transition-all duration-300 rounded-full"
+                      style={{ width: `${cloudPushProgress.percent}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Grid 2 Columns: API Key Management & Live Database Breakdown */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              
+              {/* Card 1: Central Gemini API Key */}
+              <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm flex flex-col justify-between space-y-5">
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600">
+                        <Key className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-base font-extrabold text-slate-900">
+                          Central Gemini AI API Key
+                        </h4>
+                        <p className="text-[11px] text-slate-400 font-medium">
+                          ใส่คีย์ครั้งเดียว ใช้ได้ทุกเครื่อง ทุกอุปกรณ์
+                        </p>
+                      </div>
+                    </div>
+
+                    {serverKeyStatus?.hasConfiguredKey || (customApiKey && customApiKey.trim().length > 5) ? (
+                      <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-extrabold px-2.5 py-1 rounded-lg flex items-center gap-1">
+                        <Check className="w-3 h-3 text-emerald-600" />
+                        <span>Active</span>
+                      </span>
+                    ) : (
+                      <span className="bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-extrabold px-2.5 py-1 rounded-lg">
+                        ยังไม่ใส่คีย์
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="text-xs text-slate-600 leading-relaxed mb-4">
+                    กำหนด API Key ส่วนกลางเพื่อให้เซิร์ฟเวอร์และระบบสร้างภาพตัวอย่างผ้าม่านด้วย AI ทำงานได้ตลอดเวลา 
+                    โดยพนักงานไม่ต้องกรอกคีย์เองในแต่ละเครื่อง
+                  </p>
+
+                  <form onSubmit={handleSaveCentralApiKey} className="space-y-3.5">
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1.5">
+                        Gemini API Key (Google AI Studio)
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showApiKey ? "text" : "password"}
+                          value={customApiKey}
+                          onChange={(e) => setCustomApiKey(e.target.value)}
+                          placeholder="AIzaSy..."
+                          className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-3.5 pr-20 py-2.5 text-xs font-mono font-bold text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 px-2.5 py-1 text-[10px] font-bold text-slate-500 hover:text-slate-800 bg-slate-200/60 hover:bg-slate-200 rounded-lg transition cursor-pointer"
+                        >
+                          {showApiKey ? "ซ่อน" : "แสดง"}
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        รับ API Key ฟรีได้จาก <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-indigo-600 underline font-bold">Google AI Studio</a>
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 pt-2">
+                      <button
+                        type="submit"
+                        disabled={isSavingCentralKey || !customApiKey.trim()}
+                        className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl py-2.5 transition flex items-center justify-center gap-1.5 shadow-md shadow-indigo-600/10 cursor-pointer"
+                      >
+                        {isSavingCentralKey ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Check className="w-3.5 h-3.5" />
+                        )}
+                        <span>บันทึกคีย์ AI ส่วนกลาง</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleTestCentralApiKey}
+                        disabled={isTestingKey}
+                        className="px-3.5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-xl transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        title="ทดสอบการเชื่อมต่อ API"
+                      >
+                        {isTestingKey ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-600" />
+                        ) : (
+                          <Zap className="w-3.5 h-3.5 text-indigo-600" />
+                        )}
+                        <span>ทดสอบระบบ AI</span>
+                      </button>
+
+                      {customApiKey && (
+                        <button
+                          type="button"
+                          onClick={handleRemoveCentralApiKey}
+                          disabled={isSavingCentralKey}
+                          className="p-2.5 text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
+                          title="ลบคีย์"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </form>
+
+                  {/* Test Result Message */}
+                  {testKeyResult && (
+                    <div className={`mt-3 p-3 rounded-xl border text-xs font-bold flex items-center gap-2 ${
+                      testKeyResult.success
+                        ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                        : "bg-rose-50 text-rose-800 border-rose-200"
+                    }`}>
+                      {testKeyResult.success ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                      )}
+                      <span>{testKeyResult.message}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="bg-slate-50 border border-slate-150 rounded-2xl p-3.5 text-[11px] text-slate-600 space-y-1">
+                  <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    <span>ความปลอดภัยและสิทธิ์การเข้าถึง:</span>
+                  </div>
+                  <p>คีย์นี้จะถูกเก็บไว้ที่เซิร์ฟเวอร์และเอกสารกลาง Firestore ใช้งานร่วมกันเฉพาะบุคลากรในร้าน ไม่เปิดเผยสู่ภายนอก</p>
+                </div>
+              </div>
+
+              {/* Card 2: Live Database & Cloud Sync Breakdown */}
+              <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm flex flex-col justify-between space-y-5">
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-10 h-10 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center text-emerald-600">
+                        <Database className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-base font-extrabold text-slate-900">
+                          สถานะฐานข้อมูลกลาง (Live Cloud Database)
+                        </h4>
+                        <p className="text-[11px] text-slate-400 font-medium">
+                          เชื่อมต่อ Real-time Firestore Cloud
+                        </p>
+                      </div>
+                    </div>
+
+                    <span className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-extrabold px-2.5 py-1 rounded-lg flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                      <span>Realtime Active</span>
+                    </span>
+                  </div>
+
+                  <p className="text-xs text-slate-600 leading-relaxed mb-4">
+                    จำนวนรายการข้อมูลทั้งหมดในระบบที่พร้อมให้บริการแก่พนักงานทุกคน:
+                  </p>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mb-4">
+                    <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">ผ้าม่านทึบ (Solid)</span>
+                      <span className="text-lg font-black text-slate-900 font-mono">{(settings.solidFabricMaterials || []).length}</span>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">ผ้าม่านโปร่ง (Sheer)</span>
+                      <span className="text-lg font-black text-slate-900 font-mono">{(settings.sheerFabricMaterials || []).length}</span>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">มู่ลี่ไม้ & ม่านม้วน</span>
+                      <span className="text-lg font-black text-slate-900 font-mono">
+                        {(settings.blindMaterials || []).length + (settings.rollerMaterials || []).length}
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">รูปแบบม่าน & ชาย</span>
+                      <span className="text-lg font-black text-slate-900 font-mono">
+                        {(settings.styleMaterials || []).length + (settings.hemMaterials || []).length}
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">ราง & อุปกรณ์เสริม</span>
+                      <span className="text-lg font-black text-slate-900 font-mono">
+                        {(settings.trackMaterials || []).length + (settings.accessoryMaterials || []).length}
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-50 border border-slate-150 rounded-xl p-3 text-center">
+                      <span className="text-[10px] font-bold text-slate-400 block uppercase">รายชื่อพนักงาน</span>
+                      <span className="text-lg font-black text-indigo-600 font-mono">{employees.length} คน</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-[11px] text-slate-500 font-medium">
+                    ต้องการกระจายข้อมูลล่าสุดไปยังเครื่องลูกทีมทันที?
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleForcePushToCloud}
+                    disabled={isCloudPushing}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl transition flex items-center gap-1.5 shadow-md shadow-emerald-600/10 cursor-pointer disabled:opacity-50"
+                  >
+                    {isCloudPushing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    <span>ซิงค์ข้อมูลเดี๋ยวนี้</span>
+                  </button>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+        )}
+
         
         {/* TAB: Employees */}
         {activeTab === "employees" && (

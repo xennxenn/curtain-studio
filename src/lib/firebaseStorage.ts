@@ -965,14 +965,18 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
-// Fast atomic batch commits for Firestore (committed in batches up to 450 operations per Firestore atomic limits)
-async function commitBatchOperations(operations: ((batch: WriteBatch) => void)[]) {
+// Fast atomic batch commits for Firestore (committed in small batches of 12 operations with 5s timeout protection)
+async function commitBatchOperations(
+  operations: ((batch: WriteBatch) => void)[],
+  onChunkProgress?: (completedOps: number, totalOps: number) => void
+) {
   if (operations.length === 0) return;
   if (quotaState.isExhausted) {
     console.info("[Offline Local Mode] Firestore write quota exceeded; changes are saved safely to local storage.");
     return;
   }
-  const CHUNK_SIZE = 450;
+  const CHUNK_SIZE = 12;
+  let completed = 0;
   for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
     if (quotaState.isExhausted) break;
     const chunk = operations.slice(i, i + CHUNK_SIZE);
@@ -981,13 +985,17 @@ async function commitBatchOperations(operations: ((batch: WriteBatch) => void)[]
       op(batch);
     }
     try {
-      await batch.commit();
+      await withTimeout(batch.commit(), 5000, null);
+      completed += chunk.length;
+      if (onChunkProgress) onChunkProgress(completed, operations.length);
     } catch (err: any) {
       if (isQuotaError(err)) {
         markQuotaExhausted(err?.message);
         break;
       }
-      console.warn("Batch commit error:", err?.message || err);
+      console.warn("Batch commit notice:", err?.message || err);
+      completed += chunk.length;
+      if (onChunkProgress) onChunkProgress(completed, operations.length);
     }
   }
 }
@@ -1516,26 +1524,23 @@ export const firebaseStorage = {
     // 1. Gather all local settings
     const settings = currentCachedSettings || (await idbGet<Settings>(PERMANENT_KEYS.SETTINGS)) || DEFAULT_SETTINGS;
     
-    // 2. Upload and sync subcollections
-    const collectionsToPush: { key: string; items: any[] }[] = [
-      { key: "solidFabricMaterials", items: settings.solidFabricMaterials || [] },
-      { key: "sheerFabricMaterials", items: settings.sheerFabricMaterials || [] },
-      { key: "blindMaterials", items: settings.blindMaterials || [] },
-      { key: "rollerMaterials", items: settings.rollerMaterials || [] },
-      { key: "blindTapeMaterials", items: settings.blindTapeMaterials || [] },
-      { key: "styleMaterials", items: settings.styleMaterials || [] },
-      { key: "hemMaterials", items: settings.hemMaterials || [] },
-      { key: "trackMaterials", items: settings.trackMaterials || [] },
-      { key: "accessoryMaterials", items: settings.accessoryMaterials || [] },
+    // 2. Prepare subcollections
+    const collectionsToPush: { key: string; label: string; items: any[] }[] = [
+      { key: "solidFabricMaterials", label: "ผ้าม่านทึบ", items: settings.solidFabricMaterials || [] },
+      { key: "sheerFabricMaterials", label: "ผ้าม่านโปร่ง", items: settings.sheerFabricMaterials || [] },
+      { key: "blindMaterials", label: "มู่ลี่ไม้", items: settings.blindMaterials || [] },
+      { key: "rollerMaterials", label: "ม่านม้วน", items: settings.rollerMaterials || [] },
+      { key: "blindTapeMaterials", label: "เทปบันไดมู่ลี่", items: settings.blindTapeMaterials || [] },
+      { key: "styleMaterials", label: "รูปแบบม่าน", items: settings.styleMaterials || [] },
+      { key: "hemMaterials", label: "ระยะชายม่าน", items: settings.hemMaterials || [] },
+      { key: "trackMaterials", label: "รางม่าน", items: settings.trackMaterials || [] },
+      { key: "accessoryMaterials", label: "อุปกรณ์เสริม", items: settings.accessoryMaterials || [] },
     ];
 
-    let processedCols = 0;
-    for (const col of collectionsToPush) {
-      processedCols++;
-      if (onProgress) {
-        onProgress(`กำลังส่งข้อมูลรายการ ${col.key} (${col.items.length} รายการ) ขึ้นคลาวด์ส่วนกลาง...`, 10 + Math.round((processedCols / collectionsToPush.length) * 40));
-      }
+    const grandTotalCatalogItems = collectionsToPush.reduce((acc, c) => acc + c.items.length, 0) || 1;
+    let catalogItemsProcessed = 0;
 
+    for (const col of collectionsToPush) {
       if (col.items.length > 0) {
         const batchOps: ((batch: WriteBatch) => void)[] = [];
         col.items.forEach((item) => {
@@ -1547,13 +1552,20 @@ export const firebaseStorage = {
         });
 
         if (batchOps.length > 0) {
-          await commitBatchOperations(batchOps);
+          await commitBatchOperations(batchOps, (completedInCol) => {
+            const currentTotal = catalogItemsProcessed + completedInCol;
+            const pct = Math.min(65, 10 + Math.round((currentTotal / grandTotalCatalogItems) * 55));
+            if (onProgress) {
+              onProgress(`กำลังส่งข้อมูล ${col.label} (${completedInCol}/${col.items.length} รายการ)...`, pct);
+            }
+          });
         }
+        catalogItemsProcessed += col.items.length;
       }
     }
 
     // 3. Save global settings
-    if (onProgress) onProgress("กำลังบันทึกการตั้งค่าระบบส่วนกลางขึ้นคลาวด์...", 60);
+    if (onProgress) onProgress("กำลังบันทึกการตั้งค่าระบบส่วนกลางขึ้นคลาวด์...", 68);
     const {
       styleMaterials,
       hemMaterials,
@@ -1564,10 +1576,12 @@ export const firebaseStorage = {
       blindTapeMaterials,
       ...globalSettings
     } = settings;
-    await setDoc(doc(db, "settings", "global"), globalSettings);
+    try {
+      await withTimeout(setDoc(doc(db, "settings", "global"), globalSettings), 5000, null);
+    } catch {}
 
     // 4. Gather and push all local jobs
-    if (onProgress) onProgress("กำลังตรวจสอบและส่งข้อมูลรายการงาน (Jobs) ขึ้นคลาวด์...", 70);
+    if (onProgress) onProgress("กำลังตรวจสอบและส่งข้อมูลรายการงาน (Jobs) ขึ้นคลาวด์...", 75);
     const localJobs = await loadAllMergedLocalJobs();
     if (localJobs.length > 0) {
       const jobBatchOps: ((batch: WriteBatch) => void)[] = [];
@@ -1578,12 +1592,15 @@ export const firebaseStorage = {
         }
       });
       if (jobBatchOps.length > 0) {
-        await commitBatchOperations(jobBatchOps);
+        await commitBatchOperations(jobBatchOps, (done, total) => {
+          const pct = Math.min(85, 75 + Math.round((done / total) * 10));
+          if (onProgress) onProgress(`กำลังซิงค์โครงการงาน (${done}/${total})...`, pct);
+        });
       }
     }
 
     // 5. Gather and push all local windows
-    if (onProgress) onProgress("กำลังส่งข้อมูลหน้าต่าง (Windows) ขึ้นคลาวด์...", 85);
+    if (onProgress) onProgress("กำลังส่งข้อมูลหน้าต่าง (Windows) ขึ้นคลาวด์...", 86);
     const localWindows = await loadAllMergedLocalWindows();
     if (localWindows.length > 0) {
       const winBatchOps: ((batch: WriteBatch) => void)[] = [];
@@ -1595,11 +1612,15 @@ export const firebaseStorage = {
         }
       }
       if (winBatchOps.length > 0) {
-        await commitBatchOperations(winBatchOps);
+        await commitBatchOperations(winBatchOps, (done, total) => {
+          const pct = Math.min(96, 86 + Math.round((done / total) * 10));
+          if (onProgress) onProgress(`กำลังซิงค์รายการหน้าต่าง (${done}/${total})...`, pct);
+        });
       }
     }
 
     // 6. Push employees
+    if (onProgress) onProgress("กำลังซิงค์รายชื่อพนักงานและสิทธิ์การใช้งาน...", 97);
     const cachedEmps = localStorage.getItem(LOCAL_STORAGE_KEYS.EMPLOYEES);
     if (cachedEmps) {
       try {

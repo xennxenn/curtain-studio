@@ -1,5 +1,7 @@
 // Google Drive Integration for Storing and Hosting Swatch Images
 // Scopes: https://www.googleapis.com/auth/drive.file
+import { auth } from "./firebase";
+import { signInWithPopup, GoogleAuthProvider } from "firebase/auth";
 import firebaseConfig from "../../firebase-applet-config.json";
 
 declare global {
@@ -59,18 +61,40 @@ export function isDriveConnected(): boolean {
 }
 
 /**
- * Request OAuth Access Token from Google Identity Services
+ * Request OAuth Access Token from Google via Firebase Auth popup (origin-safe) or GIS
  */
 export async function requestDriveAccessToken(): Promise<string> {
   const existing = getSavedDriveToken();
   if (existing) return existing;
 
-  // Make sure GIS script is loaded
+  // 1. Preferred Primary Method: Firebase Auth popup (always works on all domains without origin_mismatch)
+  try {
+    const provider = new GoogleAuthProvider();
+    provider.addScope("https://www.googleapis.com/auth/drive.file");
+    provider.setCustomParameters({
+      prompt: "select_account",
+    });
+
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (credential?.accessToken) {
+      saveDriveToken(credential.accessToken, 3500);
+      return credential.accessToken;
+    }
+  } catch (firebaseErr: any) {
+    console.warn("Firebase Auth Drive popup fallback check:", firebaseErr?.message || firebaseErr);
+    // If user cancelled, don't fallback to error out
+    if (firebaseErr?.code === "auth/popup-closed-by-user" || firebaseErr?.code === "auth/cancelled-popup-request") {
+      throw new Error("ผู้ใช้งานยกเลิกหน้าต่างล็อกอิน Google");
+    }
+  }
+
+  // 2. Secondary fallback via GIS
   await loadGisScript();
 
   return new Promise((resolve, reject) => {
     try {
-      const tokenClient = window.google.accounts.oauth2.initTokenClient({
+      const tokenClient = window.google?.accounts?.oauth2?.initTokenClient({
         client_id: GOOGLE_CLIENT_ID,
         scope: "https://www.googleapis.com/auth/drive.file",
         callback: (resp: any) => {
@@ -87,6 +111,10 @@ export async function requestDriveAccessToken(): Promise<string> {
           reject(err);
         }
       });
+
+      if (!tokenClient) {
+        throw new Error("Google Identity Services client is not available.");
+      }
 
       tokenClient.requestAccessToken({ prompt: "" });
     } catch (err) {

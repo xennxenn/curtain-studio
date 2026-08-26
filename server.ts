@@ -60,39 +60,60 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  // Central stored API key in memory (set by Admin)
+  let serverConfiguredApiKey: string | null = null;
+
   // Shared lazy initializer for Gemini Client
   let aiClient: GoogleGenAI | null = null;
   function getGeminiClient(customApiKey?: string) {
-    if (customApiKey && customApiKey.trim().length > 10) {
-      return new GoogleGenAI({
-        apiKey: customApiKey.trim(),
-        httpOptions: {
-          headers: {
-            "User-Agent": "aistudio-build",
-          },
-        },
-      });
+    const keyToUse = (customApiKey && customApiKey.trim().length > 10) 
+      ? customApiKey.trim() 
+      : (serverConfiguredApiKey && serverConfiguredApiKey.trim().length > 10)
+      ? serverConfiguredApiKey.trim()
+      : process.env.GEMINI_API_KEY;
+
+    if (!keyToUse || keyToUse.trim().length < 10) {
+      throw new Error("GEMINI_API_KEY is not configured in server or admin settings.");
     }
-    if (!aiClient) {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        throw new Error("GEMINI_API_KEY is not configured in environment secrets.");
-      }
-      aiClient = new GoogleGenAI({
-        apiKey,
-        httpOptions: {
-          headers: {
-            "User-Agent": "aistudio-build",
-          },
+
+    return new GoogleGenAI({
+      apiKey: keyToUse.trim(),
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
         },
-      });
-    }
-    return aiClient;
+      },
+    });
   }
 
   // API endpoints
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", time: new Date().toISOString() });
+  });
+
+  // Central Gemini API Key Configuration
+  app.get("/api/config/gemini-key-status", (req, res) => {
+    const hasKey = !!(
+      (serverConfiguredApiKey && serverConfiguredApiKey.length > 10) || 
+      (process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.length > 10)
+    );
+    res.json({ 
+      hasConfiguredKey: hasKey, 
+      source: serverConfiguredApiKey ? "admin_central" : process.env.GEMINI_API_KEY ? "env_secret" : "none" 
+    });
+  });
+
+  app.post("/api/config/gemini-key", (req, res) => {
+    const { apiKey } = req.body;
+    if (apiKey && typeof apiKey === "string" && apiKey.trim().length > 10) {
+      serverConfiguredApiKey = apiKey.trim();
+      res.json({ success: true, message: "บันทึก API Key กลางบนเซิร์ฟเวอร์เรียบร้อยแล้ว ทุกเครื่องสามารถใช้งานได้ทันที" });
+    } else if (apiKey === "" || apiKey === null) {
+      serverConfiguredApiKey = null;
+      res.json({ success: true, message: "ยกเลิก API Key กลางบนเซิร์ฟเวอร์เรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "รูปแบบ API Key ไม่ถูกต้อง" });
+    }
   });
 
   // AI Curtain preview generator

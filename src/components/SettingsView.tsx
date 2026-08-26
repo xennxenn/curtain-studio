@@ -8,7 +8,15 @@ import {
 import { Employee, Settings, FabricMaterial, StyleMaterial, HemMaterial } from "../types";
 import { generateId } from "../lib/storage";
 import { markItemDeleted, firebaseStorage } from "../lib/firebaseStorage";
-import { isDriveConnected, requestDriveAccessToken, clearDriveToken, uploadSwatchToDrive, getSavedDriveToken, getOrCreateSwatchFolder } from "../lib/googleDrive";
+import { 
+  isDriveConnected, 
+  requestDriveAccessToken, 
+  clearDriveToken, 
+  uploadSwatchToDrive, 
+  getSavedDriveToken, 
+  getOrCreateSwatchFolder,
+  backupDatabaseToDrive
+} from "../lib/googleDrive";
 import { getDedicatedGeminiApiKey, saveDedicatedGeminiApiKey, removeDedicatedGeminiApiKey } from "../lib/indexedDbStorage";
 
 interface SettingsViewProps {
@@ -142,6 +150,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   const [driveConnected, setDriveConnected] = useState<boolean>(false);
   const [isConnectingDrive, setIsConnectingDrive] = useState<boolean>(false);
+  const [isBackingUpDrive, setIsBackingUpDrive] = useState<boolean>(false);
 
   useEffect(() => {
     setDriveConnected(isDriveConnected());
@@ -152,11 +161,30 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       await requestDriveAccessToken();
       setDriveConnected(true);
-      showToast("เชื่อมต่อ Google Drive สำเร็จ! รูปภาพสวอชใหม่จะถูกจัดเก็บลงใน Google Drive ถาวร", "success");
+      showToast("เชื่อมต่อ Google Drive (naruecha.psy@gmail.com) สำเร็จ! รูปภาพสวอชและการสำรองข้อมูลจะบันทึกขึ้น Drive อัตโนมัติ", "success");
     } catch (err: any) {
       showToast(`เชื่อมต่อ Google Drive ไม่สำเร็จ: ${err?.message || "User cancelled"}`, "error");
     } finally {
       setIsConnectingDrive(false);
+    }
+  };
+
+  const handleManualBackupToDrive = async () => {
+    setIsBackingUpDrive(true);
+    try {
+      const res = await backupDatabaseToDrive({
+        settings,
+        employees,
+      });
+      if (res.success) {
+        showToast("✓ สำรองข้อมูลฐานข้อมูลแคตตาล็อกขึ้น Google Drive (naruecha.psy@gmail.com) สำเร็จแล้ว!", "success");
+      } else {
+        showToast(`สำรองข้อมูลไม่สำเร็จ: ${res.error || "เกิดข้อผิดพลาด"}`, "error");
+      }
+    } catch (err: any) {
+      showToast(`สำรองข้อมูลไม่สำเร็จ: ${err?.message || err}`, "error");
+    } finally {
+      setIsBackingUpDrive(false);
     }
   };
 
@@ -166,7 +194,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     showToast("ยกเลิกการเชื่อมต่อ Google Drive เรียบร้อยแล้ว", "info");
   };
 
-  const onSaveSettings = async (updatedSettings: Settings, isSilentTextSave = false) => {
+  const onSaveSettings = async (updatedSettings: Settings, isSilentTextSave = true) => {
     if (!isSilentTextSave) {
       setIsSaving(true);
       setSaveProgress(0);
@@ -256,14 +284,47 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       label = "แคตตาล็อกวัสดุ สวอช และสเปกม่านทั้งหมด";
     }
 
+    // Close dialog immediately for instant UI feedback
+    setClearTarget(null);
+    setClearConfirmInput("");
+
     try {
-      await onSaveSettings(updatedSettings);
-      showToast(`ล้างข้อมูล${label} สำเร็จเรียบร้อยแล้ว`, "success");
+      await onSaveSettings(updatedSettings, true);
+      showToast(`✓ ล้างข้อมูล${label} สำเร็จเรียบร้อยแล้ว`, "success");
     } catch (err) {
       showToast(`ไม่สามารถล้างข้อมูลได้: ${err instanceof Error ? err.message : String(err)}`, "error");
-    } finally {
-      setClearTarget(null);
-      setClearConfirmInput("");
+    }
+  };
+
+  // Instant purge of all sample materials and seeds without waiting
+  const handleInstantClearAllSeedData = async () => {
+    const updatedSettings = {
+      ...settings,
+      solidFabricMaterials: [],
+      sheerFabricMaterials: [],
+      blindMaterials: [],
+      rollerMaterials: [],
+      blindTapeMaterials: [],
+    };
+    const allMaterials = [
+      ...(settings.solidFabricMaterials || []),
+      ...(settings.sheerFabricMaterials || []),
+      ...(settings.blindMaterials || []),
+      ...(settings.rollerMaterials || []),
+      ...(settings.blindTapeMaterials || []),
+    ];
+    allMaterials.forEach((item) => {
+      if (item && item.id) markItemDeleted(item.id);
+    });
+
+    setClearTarget(null);
+    setClearConfirmInput("");
+
+    try {
+      await onSaveSettings(updatedSettings, true);
+      showToast("✓ ล้างข้อมูลตั้งต้นและสวอชทั้งหมดออกเป็น 0 รายการเรียบร้อยแล้ว", "success");
+    } catch (err: any) {
+      showToast(`ไม่สามารถล้างข้อมูลได้: ${err?.message || String(err)}`, "error");
     }
   };
 
@@ -535,15 +596,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       updatedSettings.blindTapeMaterials = filterOutBatch(settings.blindTapeMaterials || []);
     }
 
+    // Immediately close modal and notify user so interface never hangs
+    setBatchConfirmDeleteState(null);
+
     try {
-      setIsSaving(true);
-      await onSaveSettings(updatedSettings);
-      showToast(`ลบล้างข้อมูลรอบ "${batchName}" จำนวน ${deletedCount} รายการ สำเร็จ!`, "success");
-      setBatchConfirmDeleteState(null);
+      await onSaveSettings(updatedSettings, true);
+      showToast(`✓ ลบล้างข้อมูลรอบ "${batchName}" จำนวน ${deletedCount} รายการ สำเร็จเรียบร้อยแล้ว`, "success");
     } catch (err: any) {
       showToast(`ไม่สามารถลบข้อมูลรอบได้: ${err?.message || String(err)}`, "error");
-    } finally {
-      setIsSaving(false);
     }
   };
 
@@ -2110,69 +2170,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div className="space-y-8 animate-fade-in">
-      {/* Unified High-Speed Upload & Save Progress Modal Overlay */}
-      {(isSaving || bulkUploadStatus?.active) && (
-        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-md z-[9999] flex flex-col items-center justify-center p-6 text-white animate-fade-in">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-7 max-w-md w-full shadow-2xl text-center space-y-5">
-            {/* Progress Badge */}
-            <div className="flex items-center justify-center gap-2">
-              {isDriveConnected() ? (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  จัดเก็บรูปภาพลง Google Drive
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/30">
-                  <span className="w-2 h-2 rounded-full bg-indigo-400 animate-pulse"></span>
-                  บันทึกลงฐานข้อมูลกลาง (Firestore & Local)
-                </span>
-              )}
-            </div>
-
-            {/* Spinner Wheel / Progress Ring */}
-            <div className="relative w-24 h-24 mx-auto flex items-center justify-center">
-              <div className="absolute inset-0 border-4 border-slate-800 rounded-full"></div>
-              <div
-                className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"
-                style={{ animationDuration: "1s" }}
-              ></div>
-              <span className="text-2xl font-black text-indigo-400 font-mono">
-                {saveProgress !== null ? `${saveProgress}%` : "..."}
-              </span>
-            </div>
-            
-            <div className="space-y-1.5">
-              <h3 className="text-lg font-extrabold text-white">
-                {bulkUploadStatus?.title ? `กำลังนำเข้า ${bulkUploadStatus.title}` : "กำลังบันทึกข้อมูลผ้าม่าน..."}
-              </h3>
-              <p className="text-xs text-slate-300">
-                {bulkUploadStatus?.phase === "processing" ? (
-                  <>ประมวลผลและอัปโหลดรูปภาพสวอช <strong>{bulkUploadStatus.current}</strong> จากทั้งหมด <strong>{bulkUploadStatus.total}</strong> รูป</>
-                ) : saveProgress === 100 ? (
-                  <span className="text-emerald-400 font-bold">บันทึกข้อมูลเสร็จสมบูรณ์ 100% เรียบร้อยแล้ว!</span>
-                ) : (
-                  <>กำลังจัดเก็บดัชนีแคตตาล็อกและสเปกผ้าลงระบบฐานข้อมูล...</>
-                )}
-              </p>
-            </div>
-
-            {/* Progress bar */}
-            <div className="w-full bg-slate-800 h-2.5 rounded-full overflow-hidden p-0.5 border border-slate-700/50">
-              <div 
-                className="bg-gradient-to-r from-indigo-500 to-emerald-400 h-full rounded-full transition-all duration-300 ease-out"
-                style={{ width: `${Math.max(5, saveProgress || 0)}%` }}
-              ></div>
-            </div>
-
-            <p className="text-[10px] text-slate-400">
-              {isDriveConnected() 
-                ? "รูปภาพสวอชจะถูกส่งตรงไปเก็บในโฟลเดอร์ Curtain_Studio_Swatches บน Google Drive ของคุณ" 
-                : "ประมวลผลด้วยความเร็วสูงและบันทึกฐานข้อมูลพร้อมใช้งานทันที"}
-            </p>
-          </div>
-        </div>
-      )}
-
       {/* Intro section */}
       <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-6 md:p-8 text-white shadow-xl shadow-indigo-950/10 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -2185,6 +2182,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </p>
         </div>
         <div className="shrink-0 flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleInstantClearAllSeedData}
+            className="px-4 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-600 border border-amber-400/40 text-amber-100 hover:text-white text-xs font-extrabold transition flex items-center gap-2 shadow-lg shadow-amber-950/20 cursor-pointer"
+            title="ล้างข้อมูลและสวอชตัวอย่างตั้งต้นทั้งหมดออกทันทีแบบรวดเร็ว"
+          >
+            <Trash2 className="w-4 h-4 text-amber-300" />
+            <span>ล้างข้อมูลตั้งต้น/ตัวอย่างทั้งหมด</span>
+          </button>
           <button
             type="button"
             onClick={handleDeduplicateAllMaterials}
@@ -2201,7 +2207,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             title="ล้างข้อมูลและสวอชในแคตตาล็อกทั้งหมด"
           >
             <Trash2 className="w-4 h-4 text-rose-400" />
-            <span>ล้างแคตตาล็อกวัสดุทั้งหมด</span>
+            <span>ล้างแคตตาล็อกวัสดุ</span>
           </button>
         </div>
       </div>
@@ -2214,14 +2220,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <HardDrive className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-extrabold text-base text-emerald-100">
-                  Google Drive Cloud Swatch Storage
+                  Google Drive Storage & Daily Auto-Backup
                 </h3>
                 {driveConnected ? (
                   <span className="bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
                     <Check className="w-3 h-3" />
-                    <span>เชื่อมต่อแล้ว (บันทึกรูปถาวรบน Google Drive)</span>
+                    <span>เชื่อมต่อแล้ว: naruecha.psy@gmail.com</span>
                   </span>
                 ) : (
                   <span className="bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
@@ -2231,21 +2237,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
               <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
                 {driveConnected
-                  ? "รูปภาพสวอชผ้า มู่ลี่ และม่านม้วนที่อัปโหลดจะถูกส่งไปเก็บไว้ในโฟลเดอร์ Curtain_Studio_Swatches บน Google Drive ของคุณโดยอัตโนมัติ ไม่เปลืองโควต้า Firestore และไม่หายแน่นอน 100%"
-                  : "เชื่อมต่อ Google Drive เพื่อเก็บรูปสวอชผ้าและมู่ลี่ขนาดเต็มไว้บน Cloud ฟรีของคุณอย่างถาวร ป้องกันปัญหารูปหายหรือโควต้า Firebase เต็ม"}
+                  ? "รูปภาพสวอชผ้า มู่ลี่ ม่านม้วน และไฟล์สำรองข้อมูลแคตตาล็อกระบบทั้งหมดจะถูกส่งไปเก็บไว้ในโฟลเดอร์ Curtain_Studio_Swatches บน Google Drive (naruecha.psy@gmail.com) อัตโนมัติทุกวัน"
+                  : "เชื่อมต่อ Google Drive (naruecha.psy@gmail.com) เพื่อเก็บรูปสวอชผ้าและสำรองข้อมูลฐานข้อมูลแคตตาล็อกระบบทั้งหมดอัตโนมัติทุกวัน ป้องกันข้อมูลสูญหาย 100%"}
               </p>
             </div>
           </div>
 
-          <div className="shrink-0 self-end md:self-auto flex items-center gap-2">
+          <div className="shrink-0 self-end md:self-auto flex flex-wrap items-center gap-2">
             {driveConnected ? (
-              <button
-                type="button"
-                onClick={handleDisconnectDrive}
-                className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-rose-500/20 text-slate-300 hover:text-rose-200 border border-white/10 hover:border-rose-500/30 text-xs font-bold transition cursor-pointer"
-              >
-                ยกเลิกการเชื่อมต่อ
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handleManualBackupToDrive}
+                  disabled={isBackingUpDrive}
+                  className="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xs transition inline-flex items-center gap-1.5 shadow-lg shadow-emerald-500/25 cursor-pointer disabled:opacity-50"
+                  title="สำรองฐานข้อมูลทั้งหมดขึ้น Google Drive ตอนนี้"
+                >
+                  {isBackingUpDrive ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>กำลังสำรองข้อมูล...</span>
+                    </>
+                  ) : (
+                    <>
+                      <UploadCloud className="w-4 h-4" />
+                      <span>สำรองข้อมูลขึ้น Drive เดี๋ยวนี้</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDisconnectDrive}
+                  className="px-3.5 py-2.5 rounded-xl bg-white/10 hover:bg-rose-500/20 text-slate-300 hover:text-rose-200 border border-white/10 hover:border-rose-500/30 text-xs font-bold transition cursor-pointer"
+                >
+                  ยกเลิกการเชื่อมต่อ
+                </button>
+              </>
             ) : (
               <button
                 type="button"
@@ -5246,12 +5273,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   </button>
                   <button
                     type="button"
-                    disabled={clearConfirmInput.trim().toUpperCase() !== "CONFIRM" || isSaving}
+                    disabled={clearConfirmInput.trim().toUpperCase() !== "CONFIRM"}
                     onClick={handleClearList}
                     className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-rose-600/20 cursor-pointer"
                   >
                     <Trash2 className="w-4 h-4" />
-                    <span>{isSaving ? "กำลังล้างข้อมูล..." : "ยืนยันล้างข้อมูลทั้งหมด"}</span>
+                    <span>ยืนยันล้างข้อมูลทั้งหมด</span>
                   </button>
                 </div>
               </div>
@@ -5292,7 +5319,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </button>
               <button
                 type="button"
-                disabled={isSaving}
                 onClick={() =>
                   handleClearBatch(
                     batchConfirmDeleteState.targetCategory,
@@ -5300,10 +5326,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     batchConfirmDeleteState.batchName
                   )
                 }
-                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-rose-600/20 cursor-pointer disabled:opacity-50"
+                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-lg shadow-rose-600/20 cursor-pointer"
               >
                 <Trash2 className="w-4 h-4" />
-                <span>{isSaving ? "กำลังลบ..." : `ยืนยันลบ ${batchConfirmDeleteState.count} รายการ`}</span>
+                <span>ยืนยันลบ {batchConfirmDeleteState.count} รายการ</span>
               </button>
             </div>
           </div>

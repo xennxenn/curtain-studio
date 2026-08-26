@@ -18,6 +18,7 @@ import {
   LOCAL_STORAGE_KEYS
 } from "./lib/firebaseStorage";
 import { getDedicatedGeminiApiKey } from "./lib/indexedDbStorage";
+import { isDriveConnected, backupDatabaseToDrive } from "./lib/googleDrive";
 import { Job, WindowItem, Employee, Settings } from "./types";
 import jsPDF from "jspdf";
 import { toJpeg } from "html-to-image";
@@ -122,6 +123,34 @@ export default function App() {
       unsubscribeQuota();
     };
   }, []);
+
+  // Automated Daily Backup to Google Drive if connected
+  useEffect(() => {
+    if (!isDriveConnected()) return;
+    if (jobs.length === 0 && !settings.solidFabricMaterials?.length) return;
+
+    const lastBackup = localStorage.getItem("last_daily_gdrive_backup");
+    const today = new Date().toISOString().slice(0, 10);
+    const lastBackupDay = lastBackup ? lastBackup.slice(0, 10) : "";
+
+    // If backup has not run today, run it in background
+    if (lastBackupDay !== today) {
+      const timer = setTimeout(() => {
+        backupDatabaseToDrive({
+          settings,
+          jobs,
+          windows,
+          employees,
+        }).then((res) => {
+          if (res.success) {
+            console.log("Daily automatic Google Drive backup completed successfully.");
+          }
+        }).catch((err) => console.warn("Notice during automated backup:", err));
+      }, 5000); // 5s debounce after app loads
+
+      return () => clearTimeout(timer);
+    }
+  }, [jobs, windows, employees, settings]);
 
   // Sync editingJob with real-time updates from jobs collection
   useEffect(() => {

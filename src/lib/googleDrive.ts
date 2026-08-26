@@ -355,3 +355,68 @@ export async function batchUploadSwatchesToDrive(
   return results;
 }
 
+/**
+ * Backup entire Catalog & Database directly to Google Drive (Daily Backup)
+ */
+export async function backupDatabaseToDrive(payload: {
+  settings?: any;
+  jobs?: any[];
+  windows?: any[];
+  employees?: any[];
+}): Promise<{ success: boolean; fileId?: string; error?: string }> {
+  try {
+    let token = getSavedDriveToken();
+    if (!token) {
+      token = await requestDriveAccessToken();
+    }
+    if (!token) {
+      return { success: false, error: "ไม่ได้เข้าสู่ระบบ Google Drive" };
+    }
+
+    const folderId = await getOrCreateSwatchFolder(token);
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const fileName = `Curtain_Studio_AutoBackup_${dateStr}.json`;
+
+    const jsonString = JSON.stringify({
+      backupDate: new Date().toISOString(),
+      user: "naruecha.psy@gmail.com",
+      version: "1.0",
+      data: payload,
+    }, null, 2);
+
+    const blob = new Blob([jsonString], { type: "application/json" });
+    const metadata = {
+      name: fileName,
+      mimeType: "application/json",
+      parents: [folderId],
+    };
+
+    const form = new FormData();
+    form.append(
+      "metadata",
+      new Blob([JSON.stringify(metadata)], { type: "application/json" })
+    );
+    form.append("file", blob);
+
+    const uploadRes = await fetch(
+      "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      }
+    );
+
+    if (!uploadRes.ok) {
+      throw new Error(`HTTP ${uploadRes.status}: ไม่สามารถอัปโหลดไฟล์สำรองข้อมูลได้`);
+    }
+
+    const resData = await uploadRes.json();
+    localStorage.setItem("last_daily_gdrive_backup", new Date().toISOString());
+    return { success: true, fileId: resData.id };
+  } catch (err: any) {
+    console.warn("Daily Google Drive backup error:", err);
+    return { success: false, error: err?.message || String(err) };
+  }
+}
+

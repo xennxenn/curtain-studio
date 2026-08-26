@@ -2,6 +2,10 @@ import { db, storage } from "./firebase";
 import { ref as sRef, uploadString, getDownloadURL } from "firebase/storage";
 import { uploadSwatchToDrive, isDriveConnected } from "./googleDrive";
 import {
+  COMPLETE_DEFAULT_SETTINGS,
+  DEFAULT_EMPLOYEES as SEED_EMPLOYEES,
+} from "./defaultCatalogData";
+import {
   idbGet,
   idbSet,
   PERMANENT_KEYS,
@@ -132,107 +136,10 @@ async function safeFirestoreWrite<T>(opName: string, writeFn: () => Promise<T>):
   }
 }
 
-// Default configuration settings
-export const DEFAULT_SETTINGS: Settings = {
-  curtainStyles: [
-    "ผ้าม่านจีบ (Pleated)",
-    "ผ้าม่านตาไก่ (Grommet)",
-    "ผ้าม่านพับ (Roman)",
-    "ผ้าม่านลอน (Wave)",
-    "ผ้าม่านลอนกลับ (Ripple Fold)",
-    "ม่านม้วน (Roller)",
-    "ม่านคอกระเช้า (Tab Top)",
-  ],
-  patterns: [
-    "สีพื้นเรียบหรู (Elegant Solid)",
-    "ลายทางแนวดิ่ง (Vertical Stripes)",
-    "ลายดอกไม้ธรรมชาติ (Floral Pattern)",
-    "ผ้าทึบแสง 100% (Blackout Coating)",
-    "ผ้าโปร่งแสงถนอมสายตา (Sheer Lace)",
-    "ลายเรขาคณิต (Geometric Style)",
-  ],
-  tracks: [
-    "รางไมโคร ตัวเอ็ม (Standard M-Track)",
-    "รางโชว์อลูมิเนียมพรีเมียม (Premium Aluminum Rod)",
-    "รางดัดโค้งพิเศษ (Flexible Curve Track)",
-    "รางม้วนดึงโซ่ไข่มุก (Roller Roller System)",
-    "รางมอเตอร์ไฟฟ้า (Smart Motorized Track)",
-  ],
-  accessories: [
-    "สายรวบม่านพู่ระย้าหรู (Luxury Tassel Tiebacks)",
-    "สายรวบม่านแม่เหล็กสไตล์โมเดิร์น (Modern Magnetic Tie)",
-    "ตะขอเกี่ยวกำแพงเหล็กดัดรมดำ (Black Forged Wall Hooks)",
-    "ด้ามจูงอะคริลิคใสพิเศษ (Clear Acrylic Wand)",
-  ],
-  styleMaterials: [
-    { id: "style-1", name: "ม่านจีบ", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "pinch pleat curtains" },
-    { id: "style-2", name: "ม่านตาไก่", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "eyelet grommet curtains" },
-    { id: "style-3", name: "ม่านพับ", imageBase64: "", category: "roman", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"], styleEnForAi: "roman shades" },
-    { id: "style-4", name: "ม่านลอน", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "wave fold curtains" },
-    { id: "style-7", name: "ม่านลอนกลับ", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "back-fold wave fold curtains" },
-    { id: "style-5", name: "ม่านม้วน", imageBase64: "", category: "roller", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"], styleEnForAi: "roller shades" },
-    { id: "style-6", name: "มู่ลี่ไม้", imageBase64: "", category: "blind", operationOptions: ["ดึงโซ่ฝั่งซ้าย", "ดึงโซ่ฝั่งขวา", "ใช้งานมอเตอร์"], styleEnForAi: "venetian wood blinds" },
-  ],
-  hemMaterials: [
-    { id: "hem-1", name: "พอดีพื้น", imageBase64: "" },
-    { id: "hem-2", name: "ลอยจากพื้น 1 ซม.", imageBase64: "" },
-    { id: "hem-3", name: "กองพื้นหรูหรา +5 ซม.", imageBase64: "" },
-    { id: "hem-4", name: "กองพื้นหรูหรา +10 ซม.", imageBase64: "" },
-    { id: "hem-5", name: "พอดีขอบวงกบล่าง", imageBase64: "" },
-    { id: "hem-6", name: "เลยวงกบล่าง 15 ซม.", imageBase64: "" },
-  ],
-  solidFabricMaterials: [],
-  sheerFabricMaterials: [],
-  blindMaterials: [],
-  rollerMaterials: [],
-  blindTapeMaterials: [],
-  trackMaterials: [
-    { id: "track-1", name: "รางไมโคร ตัวเอ็ม (Standard M-Track)" },
-    { id: "track-2", name: "รางโชว์อลูมิเนียมพรีเมียม (Premium Aluminum Rod)" },
-    { id: "track-3", name: "รางดัดโค้งพิเศษ (Flexible Curve Track)" },
-    { id: "track-4", name: "รางม้วนดึงโซ่ไข่มุก (Roller Roller System)" },
-    { id: "track-5", name: "รางมอเตอร์ไฟฟ้า (Smart Motorized Track)" },
-  ],
-  accessoryMaterials: [
-    { id: "acc-1", name: "สายรวบม่านพู่ระย้าหรู (Luxury Tassel Tiebacks)" },
-    { id: "acc-2", name: "สายรวบม่านแม่เหล็กสไตล์โมเดิร์น (Modern Magnetic Tie)" },
-    { id: "acc-3", name: "ตะขอเกี่ยวกำแพงเหล็กดัดรมดำ (Black Forged Wall Hooks)" },
-    { id: "acc-4", name: "ด้ามจูงอะคริลิคใสพิเศษ (Clear Acrylic Wand)" },
-  ],
-  fabricTypes: ["Blackout", "Dimout", "Drapery", "Energy Saving"],
-  hangingTypes: [
-    "หัวผ้าม่านแขวนปิดรางม่าน",
-    "หัวผ้าม่านใต้รางม่าน",
-    "สวมห่วงตาไก่",
-    "ซ่อนในกล่องม่าน",
-  ],
-  usageTypes: [
-    "แยกกลาง (แยกซ้าย-ขวา)",
-    "เก็บข้างซ้าย (ฝั่งเดียว)",
-    "เก็บข้างขวา (ฝั่งเดียว)",
-    "ดึงม้วนขึ้น-ลง",
-    "ยึดตายตัว",
-  ],
-  clearanceOptions: [
-    "พอดีเฟรม",
-    "เลยเฟรม 10 ซม.",
-    "เลยเฟรม 15 ซม.",
-    "เลยเฟรม 20 ซม.",
-    "พอดีพื้น",
-  ],
-  clearanceTopOptions: [
-    "เลยเฟรม 10 ซม.",
-    "เลยเฟรม 15 ซม.",
-    "เลยเฟรม 20 ซม.",
-    "ติดเพดาน",
-  ],
-};
+// Complete default configuration settings loaded from pre-seeded master catalog
+export const DEFAULT_SETTINGS: Settings = COMPLETE_DEFAULT_SETTINGS;
 
-export const DEFAULT_EMPLOYEES: Employee[] = [
-  { id: "1", name: "ผู้ดูแลระบบ (Admin)", aiQuota: 100, aiUsed: 0, username: "T58121", password: "Admin", role: "admin" },
-  { id: "2", name: "คุณอรพรรณ (Designer)", aiQuota: 30, aiUsed: 4, username: "designer1", password: "123", role: "designer" },
-  { id: "3", name: "คุณธีรเดช (Sales Representative)", aiQuota: 30, aiUsed: 12, username: "sales1", password: "123", role: "installer" },
-];
+export const DEFAULT_EMPLOYEES: Employee[] = SEED_EMPLOYEES;
 
 // REAL-TIME FIRESTORE EVENT SUBSCRIBERS WITH SEEDING LOGIC AND LOCALSTORAGE CACHE FALLBACK
 export const LOCAL_STORAGE_KEYS = {
@@ -524,6 +431,9 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       }
       currentCachedSettings = parsed;
       callback(parsed);
+    } else {
+      currentCachedSettings = { ...DEFAULT_SETTINGS };
+      callback({ ...DEFAULT_SETTINGS });
     }
   } catch (err) {
     console.warn("Failed to parse settings backup from localStorage:", err);
@@ -558,7 +468,22 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
     mergedSettings.customGeminiApiKey = dedicatedApiKey;
   }
 
-  // 2. Asynchronously load complete datasets from persistent IndexedDB (no 5MB quota limit)
+  // 2. Fetch server catalog cache if available (for instant container-wide sync)
+  fetch("/api/catalog/current")
+    .then((r) => r.json())
+    .then((data) => {
+      if (data && data.hasServerCatalog && data.catalog) {
+        const serverCat = data.catalog;
+        mergedSettings = {
+          ...mergedSettings,
+          ...serverCat,
+        };
+        triggerCallback();
+      }
+    })
+    .catch(() => {});
+
+  // 3. Asynchronously load complete datasets from persistent IndexedDB
   (async () => {
     try {
       const [
@@ -595,78 +520,49 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
         hasIdbUpdates = true;
       }
 
-      const mergeIdbCollection = (current: any[] = [], idbItems: any[] | null | undefined): any[] => {
-        if (!idbItems || !Array.isArray(idbItems) || idbItems.length === 0) return current;
-        const map = new Map<string, any>();
-        current.forEach(item => {
-          if (item && item.id && !deletedItemIds.has(item.id)) map.set(item.id, item);
+      if (savedSettingsIdb) {
+        subDocFields.forEach((field) => {
+          if (Array.isArray((savedSettingsIdb as any)[field])) {
+            (nextMerged as any)[field] = (savedSettingsIdb as any)[field];
+            hasIdbUpdates = true;
+          }
         });
-        idbItems.forEach(item => {
-          if (item && item.id && !deletedItemIds.has(item.id)) map.set(item.id, item);
-        });
-        return Array.from(map.values());
-      };
-
-      if (solidIdb && solidIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.solidFabricMaterials, solidIdb);
-        if (merged.length !== (nextMerged.solidFabricMaterials || []).length) {
-          nextMerged.solidFabricMaterials = merged;
+      } else {
+        // Only if no savedSettingsIdb exists, fallback to separate collection keys if available
+        if (solidIdb && Array.isArray(solidIdb)) {
+          nextMerged.solidFabricMaterials = solidIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
-      }
-      if (sheerIdb && sheerIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.sheerFabricMaterials, sheerIdb);
-        if (merged.length !== (nextMerged.sheerFabricMaterials || []).length) {
-          nextMerged.sheerFabricMaterials = merged;
+        if (sheerIdb && Array.isArray(sheerIdb)) {
+          nextMerged.sheerFabricMaterials = sheerIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
-      }
-      if (blindIdb && blindIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.blindMaterials, blindIdb);
-        if (merged.length !== (nextMerged.blindMaterials || []).length) {
-          nextMerged.blindMaterials = merged;
+        if (blindIdb && Array.isArray(blindIdb)) {
+          nextMerged.blindMaterials = blindIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
-      }
-      if (rollerIdb && rollerIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.rollerMaterials, rollerIdb);
-        if (merged.length !== (nextMerged.rollerMaterials || []).length) {
-          nextMerged.rollerMaterials = merged;
+        if (rollerIdb && Array.isArray(rollerIdb)) {
+          nextMerged.rollerMaterials = rollerIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
-      }
-      if (blindTapeIdb && blindTapeIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.blindTapeMaterials, blindTapeIdb);
-        if (merged.length !== (nextMerged.blindTapeMaterials || []).length) {
-          nextMerged.blindTapeMaterials = merged;
+        if (blindTapeIdb && Array.isArray(blindTapeIdb)) {
+          nextMerged.blindTapeMaterials = blindTapeIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
-      }
-      if (styleIdb && styleIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.styleMaterials, styleIdb);
-        if (merged.length !== (nextMerged.styleMaterials || []).length) {
-          nextMerged.styleMaterials = merged;
+        if (styleIdb && Array.isArray(styleIdb)) {
+          nextMerged.styleMaterials = styleIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
-      }
-      if (hemIdb && hemIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.hemMaterials, hemIdb);
-        if (merged.length !== (nextMerged.hemMaterials || []).length) {
-          nextMerged.hemMaterials = merged;
+        if (hemIdb && Array.isArray(hemIdb)) {
+          nextMerged.hemMaterials = hemIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
-      }
-      if (trackIdb && trackIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.trackMaterials, trackIdb);
-        if (merged.length !== (nextMerged.trackMaterials || []).length) {
-          nextMerged.trackMaterials = merged;
+        if (trackIdb && Array.isArray(trackIdb)) {
+          nextMerged.trackMaterials = trackIdb;
           hasIdbUpdates = true;
         }
-      }
-      if (accIdb && accIdb.length > 0) {
-        const merged = mergeIdbCollection(nextMerged.accessoryMaterials, accIdb);
-        if (merged.length !== (nextMerged.accessoryMaterials || []).length) {
-          nextMerged.accessoryMaterials = merged;
+        if (accIdb && Array.isArray(accIdb)) {
+          nextMerged.accessoryMaterials = accIdb;
           hasIdbUpdates = true;
         }
       }
@@ -685,24 +581,61 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
   let isGlobalLoaded = false;
 
   const triggerCallback = () => {
-    if (isGlobalLoaded) {
-      if (!mergedSettings.clearanceTopOptions) {
-        mergedSettings.clearanceTopOptions = DEFAULT_SETTINGS.clearanceTopOptions || [];
-      }
-      const activeApiKey = getDedicatedGeminiApiKey();
-      if (activeApiKey && !mergedSettings.customGeminiApiKey) {
-        mergedSettings.customGeminiApiKey = activeApiKey;
-      }
-      currentCachedSettings = JSON.parse(JSON.stringify(mergedSettings));
-      try {
-        localStorage.setItem(LOCAL_STORAGE_KEYS.SETTINGS, JSON.stringify(mergedSettings));
-      } catch {}
-      idbSet(PERMANENT_KEYS.SETTINGS, mergedSettings).catch(() => {});
-      callback({ ...mergedSettings });
+    if (!mergedSettings.clearanceTopOptions) {
+      mergedSettings.clearanceTopOptions = DEFAULT_SETTINGS.clearanceTopOptions || [];
     }
+    const activeApiKey = getDedicatedGeminiApiKey();
+    if (activeApiKey && !mergedSettings.customGeminiApiKey) {
+      mergedSettings.customGeminiApiKey = activeApiKey;
+    }
+    currentCachedSettings = JSON.parse(JSON.stringify(mergedSettings));
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.SETTINGS, JSON.stringify(mergedSettings));
+    } catch {}
+    idbSet(PERMANENT_KEYS.SETTINGS, mergedSettings).catch(() => {});
+    callback({ ...mergedSettings });
   };
 
-  // 1. Subscribe to global document
+  // 1. Subscribe to catalog bundle document (Single-Document fast snapshot)
+  const bundleRef = doc(db, "settings", "catalog_bundle");
+  const unsubBundle = onSnapshot(bundleRef, (snap) => {
+    if (snap.exists()) {
+      const bundleData = snap.data() as Partial<Settings>;
+      if (bundleData) {
+        const currentApiKey = mergedSettings.customGeminiApiKey || getDedicatedGeminiApiKey();
+        
+        // Directly adopt updated arrays from database so deletions take effect immediately
+        const mergedArrays: Partial<Settings> = {};
+        subDocFields.forEach((field) => {
+          if (Array.isArray(bundleData[field])) {
+            mergedArrays[field] = (bundleData[field] as any[]).filter(
+              (item) => item && item.id && !deletedItemIds.has(item.id)
+            ) as any;
+          }
+        });
+
+        mergedSettings = {
+          ...mergedSettings,
+          ...bundleData,
+          ...mergedArrays,
+          customGeminiApiKey: bundleData.customGeminiApiKey || currentApiKey || undefined
+        };
+        isGlobalLoaded = true;
+        triggerCallback();
+      }
+    } else {
+      // If Firestore catalog_bundle does not exist, save current rich mergedSettings instead of resetting
+      if (!quotaState.isExhausted) {
+        safeFirestoreWrite("saveInitialCatalogBundle", () => setDoc(bundleRef, mergedSettings));
+      }
+    }
+  }, (err) => {
+    if (isQuotaError(err)) markQuotaExhausted(err?.message);
+    console.warn("Error in onSnapshot for settings/catalog_bundle:", err?.message || err);
+  });
+  unsubscribes.push(unsubBundle);
+
+  // 2. Subscribe to global document
   const globalRef = doc(db, "settings", "global");
   const unsubGlobal = onSnapshot(globalRef, (snap) => {
     if (snap.exists()) {
@@ -715,6 +648,11 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       };
       if (data.customGeminiApiKey) {
         saveDedicatedGeminiApiKey(data.customGeminiApiKey).catch(() => {});
+        fetch("/api/config/gemini-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: data.customGeminiApiKey })
+        }).catch(() => {});
       }
       isGlobalLoaded = true;
       triggerCallback();
@@ -965,7 +903,7 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
-// Fast atomic batch commits for Firestore (committed in small batches of 12 operations with 5s timeout protection)
+// Fast atomic batch commits for Firestore (committed in chunks of up to 250 operations with 4s timeout protection)
 async function commitBatchOperations(
   operations: ((batch: WriteBatch) => void)[],
   onChunkProgress?: (completedOps: number, totalOps: number) => void
@@ -975,7 +913,7 @@ async function commitBatchOperations(
     console.info("[Offline Local Mode] Firestore write quota exceeded; changes are saved safely to local storage.");
     return;
   }
-  const CHUNK_SIZE = 12;
+  const CHUNK_SIZE = 250;
   let completed = 0;
   for (let i = 0; i < operations.length; i += CHUNK_SIZE) {
     if (quotaState.isExhausted) break;
@@ -985,7 +923,7 @@ async function commitBatchOperations(
       op(batch);
     }
     try {
-      await withTimeout(batch.commit(), 5000, null);
+      await withTimeout(batch.commit(), 4000, null);
       completed += chunk.length;
       if (onChunkProgress) onChunkProgress(completed, operations.length);
     } catch (err: any) {
@@ -1276,32 +1214,9 @@ export const firebaseStorage = {
         );
       };
 
-      // Upload only changed collections
-      if (styleChanged && updatedSettings.styleMaterials) {
-        updatedSettings.styleMaterials = await uploadMaterials(updatedSettings.styleMaterials, "styleMaterials");
-      }
-      if (hemChanged && updatedSettings.hemMaterials) {
-        updatedSettings.hemMaterials = await uploadMaterials(updatedSettings.hemMaterials, "hemMaterials");
-      }
-      if (solidChanged && updatedSettings.solidFabricMaterials) {
-        updatedSettings.solidFabricMaterials = await uploadMaterials(updatedSettings.solidFabricMaterials, "solidFabricMaterials");
-      }
-      if (sheerChanged && updatedSettings.sheerFabricMaterials) {
-        updatedSettings.sheerFabricMaterials = await uploadMaterials(updatedSettings.sheerFabricMaterials, "sheerFabricMaterials");
-      }
-      if (blindChanged && updatedSettings.blindMaterials) {
-        updatedSettings.blindMaterials = await uploadMaterials(updatedSettings.blindMaterials, "blindMaterials");
-      }
-      if (rollerChanged && updatedSettings.rollerMaterials) {
-        updatedSettings.rollerMaterials = await uploadMaterials(updatedSettings.rollerMaterials, "rollerMaterials");
-      }
-      if (blindTapeChanged && updatedSettings.blindTapeMaterials) {
-        updatedSettings.blindTapeMaterials = await uploadMaterials(updatedSettings.blindTapeMaterials, "blindTapeMaterials");
-      }
-
       if (onProgress) onProgress(85);
 
-      // Split the uploaded settings into separate document structures
+      // Split the settings into separate document structures
       const {
         styleMaterials,
         hemMaterials,
@@ -1313,9 +1228,43 @@ export const firebaseStorage = {
         ...globalSettings
       } = updatedSettings;
 
+      // Immediately write latest clean collections to permanent IndexedDB keys to prevent stale restorations
+      await Promise.allSettled([
+        idbSet(PERMANENT_KEYS.SETTINGS, updatedSettings),
+        idbSet(PERMANENT_KEYS.SOLID_FABRICS, solidFabricMaterials || []),
+        idbSet(PERMANENT_KEYS.SHEER_FABRICS, sheerFabricMaterials || []),
+        idbSet(PERMANENT_KEYS.BLIND_MATERIALS, blindMaterials || []),
+        idbSet(PERMANENT_KEYS.ROLLER_MATERIALS, rollerMaterials || []),
+        idbSet(PERMANENT_KEYS.BLIND_TAPE_MATERIALS, blindTapeMaterials || []),
+        idbSet(PERMANENT_KEYS.STYLE_MATERIALS, styleMaterials || []),
+        idbSet(PERMANENT_KEYS.HEM_MATERIALS, hemMaterials || []),
+        idbSet(PERMANENT_KEYS.TRACK_MATERIALS, updatedSettings.trackMaterials || []),
+        idbSet(PERMANENT_KEYS.ACCESSORY_MATERIALS, updatedSettings.accessoryMaterials || []),
+      ]);
+
       // Save general/global options if changed
       if (globalChanged && !quotaState.isExhausted) {
         await safeFirestoreWrite("saveSettingsGlobal", () => setDoc(doc(db, "settings", "global"), globalSettings));
+      }
+
+      // Save complete settings bundle to single document for high-speed sync & new device hydration
+      if (!quotaState.isExhausted) {
+        await safeFirestoreWrite("saveSettingsBundle", () => setDoc(doc(db, "settings", "catalog_bundle"), updatedSettings));
+      }
+
+      // Sync to server-side cache for instant container-wide availability
+      fetch("/api/catalog/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalog: updatedSettings }),
+      }).catch(() => {});
+
+      if (updatedSettings.customGeminiApiKey) {
+        fetch("/api/config/gemini-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: updatedSettings.customGeminiApiKey }),
+        }).catch(() => {});
       }
 
       const collectionsToSave = [
@@ -1330,50 +1279,51 @@ export const firebaseStorage = {
         { id: "accessoryMaterials", items: (updatedSettings.accessoryMaterials || []) as any[], hasChanged: true },
       ];
 
-      // Only save subcollections that actually changed
+      // Parallel save of only subcollections that actually changed
       if (!quotaState.isExhausted) {
-        for (const col of collectionsToSave) {
-          if (!col.hasChanged || quotaState.isExhausted) continue;
+        await Promise.allSettled(
+          collectionsToSave
+            .filter((col) => col.hasChanged && !quotaState.isExhausted)
+            .map(async (col) => {
+              try {
+                const cachedCol = cached ? ((cached as any)[col.id] as any[]) : undefined;
+                const batchOps: ((batch: WriteBatch) => void)[] = [];
 
-          try {
-            const cachedCol = cached ? ((cached as any)[col.id] as any[]) : undefined;
-            const batchOps: ((batch: WriteBatch) => void)[] = [];
+                // 1. Write/update new and modified items only
+                col.items.forEach((item) => {
+                  const cachedItem = cachedCol?.find((x: any) => x.id === item.id);
+                  if (!cachedItem || !isMaterialItemEqual(item, cachedItem)) {
+                    const docRef = doc(db, "settings", "global", col.id, item.id);
+                    batchOps.push((batch) => batch.set(docRef, item));
+                  }
+                });
 
-            // 1. Write/update new and modified items only
-            col.items.forEach((item) => {
-              const cachedItem = cachedCol?.find((x: any) => x.id === item.id);
-              if (!cachedItem || !isMaterialItemEqual(item, cachedItem)) {
-                const docRef = doc(db, "settings", "global", col.id, item.id);
-                batchOps.push((batch) => batch.set(docRef, item));
-              }
-            });
-
-            // 2. Delete items that were removed in this update or marked deleted
-            if (cachedCol) {
-              const newIds = new Set(col.items.map(item => item.id));
-              cachedCol.forEach((oldItem: any) => {
-                if (!newIds.has(oldItem.id)) {
-                  deletedItemIds.add(oldItem.id);
-                  const docRef = doc(db, "settings", "global", col.id, oldItem.id);
-                  batchOps.push((batch) => batch.delete(docRef));
+                // 2. Delete items that were removed in this update or marked deleted
+                if (cachedCol) {
+                  const newIds = new Set(col.items.map((item) => item.id));
+                  cachedCol.forEach((oldItem: any) => {
+                    if (!newIds.has(oldItem.id)) {
+                      deletedItemIds.add(oldItem.id);
+                      const docRef = doc(db, "settings", "global", col.id, oldItem.id);
+                      batchOps.push((batch) => batch.delete(docRef));
+                    }
+                  });
                 }
-              });
-            }
 
-            // 3. Perform fast atomic batch writes
-            if (batchOps.length > 0) {
-              await withTimeout(commitBatchOperations(batchOps), 10000, undefined);
-            }
+                // 3. Perform fast atomic batch writes
+                if (batchOps.length > 0) {
+                  await withTimeout(commitBatchOperations(batchOps), 4000, undefined);
+                }
 
-            // 4. Permanently remove old legacy single-document structure if it still exists
-            deleteDoc(doc(db, "settings", col.id)).catch(() => {});
-          } catch (colErr: any) {
-            if (isQuotaError(colErr)) {
-              markQuotaExhausted(colErr?.message);
-              break;
-            }
-          }
-        }
+                // 4. Permanently remove old legacy single-document structure if it still exists
+                deleteDoc(doc(db, "settings", col.id)).catch(() => {});
+              } catch (colErr: any) {
+                if (isQuotaError(colErr)) {
+                  markQuotaExhausted(colErr?.message);
+                }
+              }
+            })
+        );
       }
 
       if (onProgress) onProgress(95);
@@ -1564,7 +1514,7 @@ export const firebaseStorage = {
       }
     }
 
-    // 3. Save global settings
+    // 3. Save global settings & full bundle
     if (onProgress) onProgress("กำลังบันทึกการตั้งค่าระบบส่วนกลางขึ้นคลาวด์...", 68);
     const {
       styleMaterials,
@@ -1578,6 +1528,21 @@ export const firebaseStorage = {
     } = settings;
     try {
       await withTimeout(setDoc(doc(db, "settings", "global"), globalSettings), 5000, null);
+      await withTimeout(setDoc(doc(db, "settings", "catalog_bundle"), settings), 5000, null);
+      
+      fetch("/api/catalog/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalog: settings }),
+      }).catch(() => {});
+
+      if (settings.customGeminiApiKey) {
+        fetch("/api/config/gemini-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: settings.customGeminiApiKey }),
+        }).catch(() => {});
+      }
     } catch {}
 
     // 4. Gather and push all local jobs

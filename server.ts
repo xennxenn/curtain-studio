@@ -63,6 +63,9 @@ async function startServer() {
   // Central stored API key in memory (set by Admin)
   let serverConfiguredApiKey: string | null = null;
 
+  // Central in-memory catalog sync cache
+  let serverCatalogCache: any = null;
+
   // Shared lazy initializer for Gemini Client
   let aiClient: GoogleGenAI | null = null;
   function getGeminiClient(customApiKey?: string) {
@@ -89,6 +92,25 @@ async function startServer() {
   // API endpoints
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", time: new Date().toISOString() });
+  });
+
+  // Central Catalog Bundle Sync
+  app.get("/api/catalog/current", (req, res) => {
+    res.json({ 
+      success: true, 
+      hasServerCatalog: !!serverCatalogCache,
+      catalog: serverCatalogCache 
+    });
+  });
+
+  app.post("/api/catalog/sync", (req, res) => {
+    const { catalog } = req.body;
+    if (catalog && typeof catalog === "object") {
+      serverCatalogCache = catalog;
+      res.json({ success: true, message: "บันทึกข้อมูลแคตตาล็อกบนเซิร์ฟเวอร์เรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูลแคตตาล็อกไม่ถูกต้อง" });
+    }
   });
 
   // Central Gemini API Key Configuration

@@ -10,6 +10,10 @@ interface HeaderProps {
   setActiveTab: (tab: string) => void;
   currentUser: Employee | null;
   onLogout: () => void;
+  jobsCount?: number;
+  materialsCount?: number;
+  onForceSync?: () => void;
+  isSyncing?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -20,6 +24,10 @@ export const Header: React.FC<HeaderProps> = ({
   setActiveTab,
   currentUser,
   onLogout,
+  jobsCount = 0,
+  materialsCount = 0,
+  onForceSync,
+  isSyncing = false,
 }) => {
   const activeEmployee = employees.find((e) => e.id === activeEmployeeId);
   const isAdmin = currentUser?.role === "admin";
@@ -101,6 +109,34 @@ export const Header: React.FC<HeaderProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Realtime Central Cloud Sync Badge */}
+            <div className="hidden lg:flex items-center gap-2 bg-slate-800/80 border border-slate-700/60 rounded-xl px-3 py-2 text-xs">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold text-slate-400 leading-tight">
+                  ฐานข้อมูลกลาง Realtime
+                </span>
+                <span className="text-[11px] font-semibold text-emerald-300">
+                  {materialsCount} วัสดุ • {jobsCount} งาน
+                </span>
+              </div>
+              {onForceSync && (
+                <button
+                  onClick={onForceSync}
+                  disabled={isSyncing}
+                  className="ml-1 p-1 hover:bg-slate-700 rounded-lg text-slate-300 hover:text-white transition cursor-pointer disabled:opacity-50"
+                  title="ซิงค์ฐานข้อมูลกลางทันที"
+                >
+                  <svg className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin text-indigo-400" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+              )}
+            </div>
 
             {/* Logout button */}
             <button

@@ -18,6 +18,8 @@ export const PERMANENT_KEYS = {
   BLIND_TAPE_MATERIALS: "swatches_blindTapeMaterials",
   STYLE_MATERIALS: "swatches_styleMaterials",
   HEM_MATERIALS: "swatches_hemMaterials",
+  TRACK_MATERIALS: "swatches_trackMaterials",
+  ACCESSORY_MATERIALS: "swatches_accessoryMaterials",
 };
 
 let dbPromise: Promise<IDBDatabase> | null = null;

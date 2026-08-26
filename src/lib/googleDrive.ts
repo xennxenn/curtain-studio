@@ -260,7 +260,20 @@ export async function uploadSwatchToDrive(
     const fileResult = await uploadRes.json();
     const fileId = fileResult.id;
 
-    // Direct embeddable Google Drive image URL (fast and permanent)
+    // Set public view permission on the uploaded file so ALL employees on ANY device can load it directly
+    fetch(`https://www.googleapis.com/drive/v3/files/${fileId}/permissions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        role: "reader",
+        type: "anyone",
+      }),
+    }).catch((pErr) => console.warn("Notice setting swatch file public permissions:", pErr));
+
+    // Direct embeddable Google Drive image URL (fast, permanent, and accessible globally)
     const directUrl = `https://lh3.googleusercontent.com/d/${fileId}`;
     return directUrl;
   } catch (err) {

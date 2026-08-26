@@ -33,7 +33,7 @@ export interface QuotaStatus {
 }
 
 export const FIRESTORE_UPGRADE_URL =
-  "https://console.firebase.google.com/project/gen-lang-client-0654376496/firestore/databases/ai-studio-curtainpreview-d3828c0e-2a19-4bae-90b1-600bd7cdf930/data?openUpgradeDialog=true";
+  "https://console.firebase.google.com/project/gen-lang-client-0777226266/firestore/databases/(default)/data";
 
 let quotaState: QuotaStatus = {
   isExhausted: false,
@@ -42,14 +42,15 @@ let quotaState: QuotaStatus = {
   lastChecked: Date.now()
 };
 
-// Check if quota status was previously persisted
+// Check if quota status was previously persisted (auto-resets after 2 minutes)
 try {
   const savedQuota = localStorage.getItem("firestore_quota_status");
   if (savedQuota) {
     const parsed = JSON.parse(savedQuota);
-    // Keep active for up to 6 hours before allowing fresh recheck
-    if (parsed.isExhausted && Date.now() - parsed.lastChecked < 6 * 60 * 60 * 1000) {
+    if (parsed.isExhausted && Date.now() - parsed.lastChecked < 2 * 60 * 1000) {
       quotaState = parsed;
+    } else {
+      localStorage.removeItem("firestore_quota_status");
     }
   }
 } catch {}
@@ -535,7 +536,9 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
     "sheerFabricMaterials",
     "blindMaterials",
     "rollerMaterials",
-    "blindTapeMaterials"
+    "blindTapeMaterials",
+    "trackMaterials",
+    "accessoryMaterials",
   ];
 
   const fieldToIdbKey: Record<string, string> = {
@@ -546,6 +549,8 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
     blindMaterials: PERMANENT_KEYS.BLIND_MATERIALS,
     rollerMaterials: PERMANENT_KEYS.ROLLER_MATERIALS,
     blindTapeMaterials: PERMANENT_KEYS.BLIND_TAPE_MATERIALS,
+    trackMaterials: PERMANENT_KEYS.TRACK_MATERIALS,
+    accessoryMaterials: PERMANENT_KEYS.ACCESSORY_MATERIALS,
   };
 
   let mergedSettings: Settings = currentCachedSettings ? { ...currentCachedSettings } : { ...DEFAULT_SETTINGS };
@@ -565,6 +570,8 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
         blindTapeIdb,
         styleIdb,
         hemIdb,
+        trackIdb,
+        accIdb,
         apiKeyIdb
       ] = await Promise.all([
         idbGet<Settings>(PERMANENT_KEYS.SETTINGS),
@@ -575,6 +582,8 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
         idbGet<any[]>(PERMANENT_KEYS.BLIND_TAPE_MATERIALS),
         idbGet<any[]>(PERMANENT_KEYS.STYLE_MATERIALS),
         idbGet<any[]>(PERMANENT_KEYS.HEM_MATERIALS),
+        idbGet<any[]>(PERMANENT_KEYS.TRACK_MATERIALS),
+        idbGet<any[]>(PERMANENT_KEYS.ACCESSORY_MATERIALS),
         getDedicatedGeminiApiKeyAsync(),
       ]);
 
@@ -644,6 +653,20 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
         const merged = mergeIdbCollection(nextMerged.hemMaterials, hemIdb);
         if (merged.length !== (nextMerged.hemMaterials || []).length) {
           nextMerged.hemMaterials = merged;
+          hasIdbUpdates = true;
+        }
+      }
+      if (trackIdb && trackIdb.length > 0) {
+        const merged = mergeIdbCollection(nextMerged.trackMaterials, trackIdb);
+        if (merged.length !== (nextMerged.trackMaterials || []).length) {
+          nextMerged.trackMaterials = merged;
+          hasIdbUpdates = true;
+        }
+      }
+      if (accIdb && accIdb.length > 0) {
+        const merged = mergeIdbCollection(nextMerged.accessoryMaterials, accIdb);
+        if (merged.length !== (nextMerged.accessoryMaterials || []).length) {
+          nextMerged.accessoryMaterials = merged;
           hasIdbUpdates = true;
         }
       }
@@ -804,12 +827,12 @@ const compressWindowImages = async (win: WindowItem): Promise<WindowItem> => {
       compressedStyleImage,
       compressedHemImage,
     ] = await Promise.all([
-      compressImage(win.preImageBase64, 800, 0.85),
-      compressImage(win.aiPreviewBase64, 800, 0.85),
-      compressImage(win.fabricImageBase64, 400, 0.85),
-      compressImage(win.sheerImageBase64, 400, 0.85),
-      compressImage(win.styleImageBase64, 400, 0.85),
-      compressImage(win.hemImageBase64, 400, 0.85),
+      compressImage(win.preImageBase64, 640, 0.65),
+      compressImage(win.aiPreviewBase64, 640, 0.65),
+      compressImage(win.fabricImageBase64, 320, 0.65),
+      compressImage(win.sheerImageBase64, 320, 0.65),
+      compressImage(win.styleImageBase64, 320, 0.65),
+      compressImage(win.hemImageBase64, 320, 0.65),
     ]);
 
     return {
@@ -1294,7 +1317,9 @@ export const firebaseStorage = {
         { id: "sheerFabricMaterials", items: sheerFabricMaterials || [], hasChanged: sheerChanged },
         { id: "blindMaterials", items: blindMaterials || [], hasChanged: blindChanged },
         { id: "rollerMaterials", items: rollerMaterials || [], hasChanged: rollerChanged },
-        { id: "blindTapeMaterials", items: blindTapeMaterials || [], hasChanged: blindTapeChanged }
+        { id: "blindTapeMaterials", items: blindTapeMaterials || [], hasChanged: blindTapeChanged },
+        { id: "trackMaterials", items: (updatedSettings.trackMaterials || []) as any[], hasChanged: true },
+        { id: "accessoryMaterials", items: (updatedSettings.accessoryMaterials || []) as any[], hasChanged: true },
       ];
 
       // Only save subcollections that actually changed
@@ -1363,7 +1388,7 @@ export const firebaseStorage = {
   },
 
   async saveSingleMaterial<T extends { id: string }>(
-    collectionKey: "solidFabricMaterials" | "sheerFabricMaterials" | "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" | "styleMaterials" | "hemMaterials",
+    collectionKey: "solidFabricMaterials" | "sheerFabricMaterials" | "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" | "styleMaterials" | "hemMaterials" | "trackMaterials" | "accessoryMaterials",
     item: T
   ): Promise<void> {
     // 1. Immediately update in-memory cache
@@ -1385,6 +1410,8 @@ export const firebaseStorage = {
         blindMaterials: PERMANENT_KEYS.BLIND_MATERIALS,
         rollerMaterials: PERMANENT_KEYS.ROLLER_MATERIALS,
         blindTapeMaterials: PERMANENT_KEYS.BLIND_TAPE_MATERIALS,
+        trackMaterials: PERMANENT_KEYS.TRACK_MATERIALS,
+        accessoryMaterials: PERMANENT_KEYS.ACCESSORY_MATERIALS,
       };
       const idbKey = fieldToIdbKey[collectionKey];
       if (idbKey) {
@@ -1406,7 +1433,7 @@ export const firebaseStorage = {
   },
 
   async deleteSingleMaterial(
-    collectionKey: "solidFabricMaterials" | "sheerFabricMaterials" | "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" | "styleMaterials" | "hemMaterials",
+    collectionKey: "solidFabricMaterials" | "sheerFabricMaterials" | "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" | "styleMaterials" | "hemMaterials" | "trackMaterials" | "accessoryMaterials",
     itemId: string
   ): Promise<void> {
     markItemDeleted(itemId);
@@ -1424,6 +1451,8 @@ export const firebaseStorage = {
         blindMaterials: PERMANENT_KEYS.BLIND_MATERIALS,
         rollerMaterials: PERMANENT_KEYS.ROLLER_MATERIALS,
         blindTapeMaterials: PERMANENT_KEYS.BLIND_TAPE_MATERIALS,
+        trackMaterials: PERMANENT_KEYS.TRACK_MATERIALS,
+        accessoryMaterials: PERMANENT_KEYS.ACCESSORY_MATERIALS,
       };
       const idbKey = fieldToIdbKey[collectionKey];
       if (idbKey) {
@@ -1470,5 +1499,130 @@ export const firebaseStorage = {
         }
       });
     }
+  },
+
+  /**
+   * Force push all local datasets (fabrics, sheers, blinds, rollers, tapes, styles, hems, tracks, accessories, jobs, windows, employees)
+   * to Firestore shared cloud database so all employee devices receive 100% of the centralized catalog in Realtime!
+   */
+  async forcePushAllLocalDataToFirestore(
+    onProgress?: (msg: string, percent: number) => void
+  ): Promise<{ syncedItems: number; jobsCount: number; windowsCount: number }> {
+    resetQuotaStatus();
+    let totalItems = 0;
+
+    if (onProgress) onProgress("กำลังรวบรวมข้อมูลทั้งหมดจากระบบเครื่องนี้...", 10);
+
+    // 1. Gather all local settings
+    const settings = currentCachedSettings || (await idbGet<Settings>(PERMANENT_KEYS.SETTINGS)) || DEFAULT_SETTINGS;
+    
+    // 2. Upload and sync subcollections
+    const collectionsToPush: { key: string; items: any[] }[] = [
+      { key: "solidFabricMaterials", items: settings.solidFabricMaterials || [] },
+      { key: "sheerFabricMaterials", items: settings.sheerFabricMaterials || [] },
+      { key: "blindMaterials", items: settings.blindMaterials || [] },
+      { key: "rollerMaterials", items: settings.rollerMaterials || [] },
+      { key: "blindTapeMaterials", items: settings.blindTapeMaterials || [] },
+      { key: "styleMaterials", items: settings.styleMaterials || [] },
+      { key: "hemMaterials", items: settings.hemMaterials || [] },
+      { key: "trackMaterials", items: settings.trackMaterials || [] },
+      { key: "accessoryMaterials", items: settings.accessoryMaterials || [] },
+    ];
+
+    let processedCols = 0;
+    for (const col of collectionsToPush) {
+      processedCols++;
+      if (onProgress) {
+        onProgress(`กำลังส่งข้อมูลรายการ ${col.key} (${col.items.length} รายการ) ขึ้นคลาวด์ส่วนกลาง...`, 10 + Math.round((processedCols / collectionsToPush.length) * 40));
+      }
+
+      if (col.items.length > 0) {
+        const batchOps: ((batch: WriteBatch) => void)[] = [];
+        col.items.forEach((item) => {
+          if (item && item.id) {
+            const docRef = doc(db, "settings", "global", col.key, item.id);
+            batchOps.push((batch) => batch.set(docRef, item));
+            totalItems++;
+          }
+        });
+
+        if (batchOps.length > 0) {
+          await commitBatchOperations(batchOps);
+        }
+      }
+    }
+
+    // 3. Save global settings
+    if (onProgress) onProgress("กำลังบันทึกการตั้งค่าระบบส่วนกลางขึ้นคลาวด์...", 60);
+    const {
+      styleMaterials,
+      hemMaterials,
+      solidFabricMaterials,
+      sheerFabricMaterials,
+      blindMaterials,
+      rollerMaterials,
+      blindTapeMaterials,
+      ...globalSettings
+    } = settings;
+    await setDoc(doc(db, "settings", "global"), globalSettings);
+
+    // 4. Gather and push all local jobs
+    if (onProgress) onProgress("กำลังตรวจสอบและส่งข้อมูลรายการงาน (Jobs) ขึ้นคลาวด์...", 70);
+    const localJobs = await loadAllMergedLocalJobs();
+    if (localJobs.length > 0) {
+      const jobBatchOps: ((batch: WriteBatch) => void)[] = [];
+      localJobs.forEach((job) => {
+        if (job && job.id) {
+          const docRef = doc(db, "jobs", job.id);
+          jobBatchOps.push((batch) => batch.set(docRef, job));
+        }
+      });
+      if (jobBatchOps.length > 0) {
+        await commitBatchOperations(jobBatchOps);
+      }
+    }
+
+    // 5. Gather and push all local windows
+    if (onProgress) onProgress("กำลังส่งข้อมูลหน้าต่าง (Windows) ขึ้นคลาวด์...", 85);
+    const localWindows = await loadAllMergedLocalWindows();
+    if (localWindows.length > 0) {
+      const winBatchOps: ((batch: WriteBatch) => void)[] = [];
+      for (const win of localWindows) {
+        if (win && win.id) {
+          const compressed = await compressWindowImages(win);
+          const docRef = doc(db, "windows", win.id);
+          winBatchOps.push((batch) => batch.set(docRef, compressed));
+        }
+      }
+      if (winBatchOps.length > 0) {
+        await commitBatchOperations(winBatchOps);
+      }
+    }
+
+    // 6. Push employees
+    const cachedEmps = localStorage.getItem(LOCAL_STORAGE_KEYS.EMPLOYEES);
+    if (cachedEmps) {
+      try {
+        const emps: Employee[] = JSON.parse(cachedEmps);
+        const empBatchOps: ((batch: WriteBatch) => void)[] = [];
+        emps.forEach((emp) => {
+          if (emp && emp.id) {
+            const docRef = doc(db, "employees", emp.id);
+            empBatchOps.push((batch) => batch.set(docRef, emp));
+          }
+        });
+        if (empBatchOps.length > 0) {
+          await commitBatchOperations(empBatchOps);
+        }
+      } catch {}
+    }
+
+    if (onProgress) onProgress("✓ ซิงค์ฐานข้อมูลทั้งหมดขึ้นคลาวด์ส่วนกลางเรียบร้อยแล้ว!", 100);
+
+    return {
+      syncedItems: totalItems,
+      jobsCount: localJobs.length,
+      windowsCount: localWindows.length
+    };
   }
 };

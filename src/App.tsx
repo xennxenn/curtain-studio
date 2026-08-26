@@ -727,6 +727,31 @@ export default function App() {
     ? jobs
     : jobs.filter((job) => job.employeeId === currentUser.id);
 
+  const totalMaterialsCount = 
+    (settings.solidFabricMaterials?.length || 0) +
+    (settings.sheerFabricMaterials?.length || 0) +
+    (settings.blindMaterials?.length || 0) +
+    (settings.rollerMaterials?.length || 0) +
+    (settings.blindTapeMaterials?.length || 0) +
+    (settings.styleMaterials?.length || 0) +
+    (settings.hemMaterials?.length || 0) +
+    (settings.trackMaterials?.length || 0) +
+    (settings.accessoryMaterials?.length || 0);
+
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  const handleForceSync = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await firebaseStorage.forcePushAllLocalDataToFirestore();
+      alert(`✓ ซิงค์ฐานข้อมูลขึ้นคลาวด์ส่วนกลางสำเร็จ!\n• วัสดุ/สเปก: ${res.syncedItems} รายการ\n• โครงการงาน: ${res.jobsCount} งาน\n• หน้าต่าง: ${res.windowsCount} บาน\n\nทุกเครื่องจะได้รับข้อมูลชุดเดียวกันแบบ Realtime ทันที`);
+    } catch (err: any) {
+      alert(`ซิงค์ข้อมูลไม่สำเร็จ: ${err?.message || "กรุณาลองใหม่อีกครั้ง"}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-white flex flex-col font-sans">
       {/* Header tab navigation & Quota */}
@@ -738,6 +763,10 @@ export default function App() {
         setActiveTab={handleSetActiveTab}
         currentUser={currentUser}
         onLogout={handleLogout}
+        jobsCount={jobs.length}
+        materialsCount={totalMaterialsCount}
+        onForceSync={currentUser?.role === "admin" ? handleForceSync : undefined}
+        isSyncing={isSyncing}
       />
 
       {/* Quota Exhausted Warning & Fallback Status Banner */}

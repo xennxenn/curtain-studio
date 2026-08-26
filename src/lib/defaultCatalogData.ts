@@ -7,15 +7,50 @@ export const DEFAULT_EMPLOYEES: Employee[] = [
   { id: "4", name: "คุณณภัทร (Sales & Site)", username: "naphat", role: "installer", password: "123", aiQuota: 100, aiUsed: 0 },
 ];
 
-export const INITIAL_SOLID_FABRICS: FabricMaterial[] = [];
+export const INITIAL_SOLID_FABRICS: FabricMaterial[] = [
+  { id: "solid-1", name: "CITADEL", colorName: "01 LONDON GRAY", type: "Blackout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-2", name: "CITADEL", colorName: "02 CHASSIS GREY", type: "Blackout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-3", name: "GLAMOUR", colorName: "05 GOLDEN BRONZE", type: "Dimout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-4", name: "GLAMOUR", colorName: "12 CHAMPAGNE GOLD", type: "Dimout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-5", name: "SERENE", colorName: "03 COCOA BROWN", type: "Dimout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-6", name: "SERENE", colorName: "08 CREAMY BEIGE", type: "Dimout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-7", name: "ROYAL LUXE", colorName: "11 DEEP FOREST GREEN", type: "Blackout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-8", name: "ROYAL LUXE", colorName: "14 MIDNIGHT NAVY", type: "Blackout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-9", name: "SHERWOOD", colorName: "07 SAGE MIST", type: "Drapery", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-10", name: "MONACO", colorName: "04 WARM TAUPE", type: "Dimout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-11", name: "VELVET TOUCH", colorName: "09 DUSKY ROSE", type: "Dimout", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "solid-12", name: "NORDIC LINEN", colorName: "02 OATMEAL NATURAL", type: "Drapery", imageBase64: "", uploadedAt: new Date().toISOString() },
+];
 
-export const INITIAL_SHEER_FABRICS: FabricMaterial[] = [];
+export const INITIAL_SHEER_FABRICS: FabricMaterial[] = [
+  { id: "sheer-1", name: "AFFINITY", colorName: "01 PURE WHITE", type: "Sheer", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "sheer-2", name: "AFFINITY", colorName: "02 SOFT CREAM", type: "Sheer", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "sheer-3", name: "AURA", colorName: "03 CREAMY IVORY", type: "Sheer", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "sheer-4", name: "AURA", colorName: "04 SILVER SHIMMER", type: "Sheer", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "sheer-5", name: "LACE CLASSIC", colorName: "09 SNOW FLAKE", type: "Sheer", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "sheer-6", name: "CHIFFON BREEZE", colorName: "01 PEARL WHITE", type: "Sheer", imageBase64: "", uploadedAt: new Date().toISOString() },
+];
 
-export const INITIAL_BLIND_MATERIALS: FabricMaterial[] = [];
+export const INITIAL_BLIND_MATERIALS: FabricMaterial[] = [
+  { id: "blind-1", name: "BASSWOOD PREMIUM", colorName: "01 NATURAL TEAK (ไม้สักธรรมชาติ)", type: "Wood Blinds", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "blind-2", name: "BASSWOOD PREMIUM", colorName: "02 DARK WALNUT (ไม้วอลนัทเข้ม)", type: "Wood Blinds", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "blind-3", name: "BASSWOOD PREMIUM", colorName: "03 SNOW WHITE (ขาวนวล)", type: "Wood Blinds", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "blind-4", name: "FOAM WOOD (กันน้ำ)", colorName: "04 CHARCOAL GREY", type: "Wood Blinds", imageBase64: "", uploadedAt: new Date().toISOString() },
+];
 
-export const INITIAL_ROLLER_MATERIALS: FabricMaterial[] = [];
+export const INITIAL_ROLLER_MATERIALS: FabricMaterial[] = [
+  { id: "roller-1", name: "SUNSCREEN 5%", colorName: "01 WHITE GREY (กันแดด 95%)", type: "Roller Shades", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "roller-2", name: "SUNSCREEN 3%", colorName: "02 CHARCOAL BRONZE", type: "Roller Shades", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "roller-3", name: "BLACKOUT 100%", colorName: "03 IVORY WHITE (ทึบแสงสนิท)", type: "Roller Shades", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "roller-4", name: "BLACKOUT 100%", colorName: "04 SLATE GREY (เทาเข้ม)", type: "Roller Shades", imageBase64: "", uploadedAt: new Date().toISOString() },
+];
 
-export const INITIAL_BLIND_TAPE_MATERIALS: FabricMaterial[] = [];
+export const INITIAL_BLIND_TAPE_MATERIALS: FabricMaterial[] = [
+  { id: "tape-1", name: "COTTON TAPE 25MM", colorName: "01 BEIGE (ครีม)", type: "Fabric Tape", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "tape-2", name: "COTTON TAPE 25MM", colorName: "02 DARK BROWN (น้ำตาลเข้ม)", type: "Fabric Tape", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "tape-3", name: "COTTON TAPE 25MM", colorName: "03 BLACK (ดำ)", type: "Fabric Tape", imageBase64: "", uploadedAt: new Date().toISOString() },
+  { id: "tape-4", name: "COTTON TAPE 38MM", colorName: "04 WIDE GREY (เทากว้าง)", type: "Fabric Tape", imageBase64: "", uploadedAt: new Date().toISOString() },
+];
 
 export const INITIAL_STYLE_MATERIALS: StyleMaterial[] = [
   { id: "style-1", name: "ม่านจีบ", imageBase64: "", category: "curtain", operationOptions: ["รวบซ้าย", "รวบขวา", "แยกกลาง"], styleEnForAi: "pinch pleat curtains" },

@@ -420,3 +420,114 @@ export async function backupDatabaseToDrive(payload: {
   }
 }
 
+/**
+ * List all backup JSON files in Google Drive folder and across Drive
+ */
+export async function listBackupsFromDrive(): Promise<{ id: string; name: string; createdTime: string; size?: string }[]> {
+  try {
+    let token = getSavedDriveToken();
+    if (!token) {
+      token = await requestDriveAccessToken();
+    }
+    if (!token) return [];
+
+    let folderId: string | null = null;
+    try {
+      folderId = await getOrCreateSwatchFolder(token);
+    } catch {}
+
+    const fileMap = new Map<string, { id: string; name: string; createdTime: string; size?: string }>();
+
+    // 1. Search inside swatch folder
+    if (folderId) {
+      try {
+        const query = encodeURIComponent(
+          `'${folderId}' in parents and trashed = false`
+        );
+        const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,createdTime,size,mimeType)&orderBy=createdTime desc&pageSize=50`;
+        const res = await fetch(searchUrl, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          (data.files || []).forEach((f: any) => {
+            if (f.name.endsWith(".json") || f.mimeType === "application/json") {
+              fileMap.set(f.id, {
+                id: f.id,
+                name: f.name,
+                createdTime: f.createdTime,
+                size: f.size,
+              });
+            }
+          });
+        }
+      } catch (err) {
+        console.warn("Error searching folder backups:", err);
+      }
+    }
+
+    // 2. Search across entire drive for Curtain / Backup json files
+    try {
+      const globalQuery = encodeURIComponent(
+        `trashed = false and (name contains 'Curtain_Studio' or name contains 'Curtain' or name contains 'Backup' or name contains 'backup')`
+      );
+      const globalSearchUrl = `https://www.googleapis.com/drive/v3/files?q=${globalQuery}&fields=files(id,name,createdTime,size,mimeType)&orderBy=createdTime desc&pageSize=50`;
+      const gRes = await fetch(globalSearchUrl, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (gRes.ok) {
+        const data = await gRes.json();
+        (data.files || []).forEach((f: any) => {
+          if (f.name.endsWith(".json") || f.mimeType === "application/json") {
+            if (!fileMap.has(f.id)) {
+              fileMap.set(f.id, {
+                id: f.id,
+                name: f.name,
+                createdTime: f.createdTime,
+                size: f.size,
+              });
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.warn("Error searching global backups:", err);
+    }
+
+    const list = Array.from(fileMap.values());
+    list.sort((a, b) => {
+      const timeA = new Date(a.createdTime || 0).getTime();
+      const timeB = new Date(b.createdTime || 0).getTime();
+      return timeB - timeA;
+    });
+
+    return list;
+  } catch (err) {
+    console.warn("List backups from drive error:", err);
+    return [];
+  }
+}
+
+/**
+ * Download and parse a backup file from Google Drive
+ */
+export async function downloadBackupFromDrive(fileId: string): Promise<any> {
+  let token = getSavedDriveToken();
+  if (!token) {
+    token = await requestDriveAccessToken();
+  }
+  if (!token) throw new Error("ไม่ได้เข้าสู่ระบบ Google Drive");
+
+  const downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+  const res = await fetch(downloadUrl, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ไม่สามารถดาวน์โหลดไฟล์สำรองข้อมูลจาก Google Drive ได้`);
+  }
+
+  const json = await res.json();
+  return json;
+}
+

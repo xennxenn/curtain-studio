@@ -418,6 +418,10 @@ export const markItemDeleted = (id: string) => {
   deletedItemIds.add(id);
 };
 
+export const clearDeletedItemIds = () => {
+  deletedItemIds.clear();
+};
+
 export const subscribeSettings = (callback: (settings: Settings) => void) => {
   const dedicatedApiKey = getDedicatedGeminiApiKey();
 

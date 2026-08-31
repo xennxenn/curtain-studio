@@ -379,6 +379,33 @@ export const clearDeletedItemIds = () => {
 export const subscribeSettings = (callback: (settings: Settings) => void) => {
   const dedicatedApiKey = getDedicatedGeminiApiKey();
 
+  const subDocFields: (keyof Settings)[] = [
+    "styleMaterials",
+    "hemMaterials",
+    "solidFabricMaterials",
+    "sheerFabricMaterials",
+    "blindMaterials",
+    "rollerMaterials",
+    "blindTapeMaterials",
+    "trackMaterials",
+    "accessoryMaterials",
+  ];
+
+  const structuralFields: (keyof Settings)[] = [
+    "styleMaterials",
+    "hemMaterials",
+    "trackMaterials",
+    "accessoryMaterials",
+  ];
+
+  const userMaterialFields: (keyof Settings)[] = [
+    "solidFabricMaterials",
+    "sheerFabricMaterials",
+    "blindMaterials",
+    "rollerMaterials",
+    "blindTapeMaterials",
+  ];
+
   // 1. Load from local storage backup immediately to ensure zero UI delay and offline resiliency
   try {
     const cachedBackup = localStorage.getItem(LOCAL_STORAGE_KEYS.SETTINGS);
@@ -396,18 +423,6 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
   } catch (err) {
     console.warn("Failed to parse settings backup from localStorage:", err);
   }
-
-  const subDocFields: (keyof Settings)[] = [
-    "styleMaterials",
-    "hemMaterials",
-    "solidFabricMaterials",
-    "sheerFabricMaterials",
-    "blindMaterials",
-    "rollerMaterials",
-    "blindTapeMaterials",
-    "trackMaterials",
-    "accessoryMaterials",
-  ];
 
   const fieldToIdbKey: Record<string, string> = {
     styleMaterials: PERMANENT_KEYS.STYLE_MATERIALS,
@@ -480,11 +495,9 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
           const srvData = await srvRes.json();
           if (srvData.success && srvData.catalog) {
             subDocFields.forEach((field) => {
-              if (Array.isArray(srvData.catalog[field]) && srvData.catalog[field].length > 0) {
-                if (!(nextMerged as any)[field] || (nextMerged as any)[field].length === 0) {
-                  (nextMerged as any)[field] = srvData.catalog[field];
-                  hasIdbUpdates = true;
-                }
+              if (Array.isArray(srvData.catalog[field])) {
+                (nextMerged as any)[field] = srvData.catalog[field];
+                hasIdbUpdates = true;
               }
             });
             if (srvData.catalog.customGeminiApiKey && !nextMerged.customGeminiApiKey) {
@@ -503,7 +516,7 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       if (savedSettingsIdb) {
         subDocFields.forEach((field) => {
           if (Array.isArray((savedSettingsIdb as any)[field])) {
-            (nextMerged as any)[field] = (savedSettingsIdb as any)[field];
+            (nextMerged as any)[field] = (savedSettingsIdb as any)[field].filter((x: any) => x && x.id && !deletedItemIds.has(x.id));
             hasIdbUpdates = true;
           }
         });
@@ -538,11 +551,11 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
           hasIdbUpdates = true;
         }
         if (trackIdb && Array.isArray(trackIdb)) {
-          nextMerged.trackMaterials = trackIdb;
+          nextMerged.trackMaterials = trackIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
         if (accIdb && Array.isArray(accIdb)) {
-          nextMerged.accessoryMaterials = accIdb;
+          nextMerged.accessoryMaterials = accIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
           hasIdbUpdates = true;
         }
       }
@@ -635,36 +648,16 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
   // 2. Subscribe to each subcollection in Firestore (authoritative real-time sync for fabrics, blinds, styles, etc.)
   subDocFields.forEach((field) => {
     const colRef = collection(db, "settings", "global", field);
-
     const unsubCol = onSnapshot(colRef, (snapshot) => {
-      if (!snapshot.empty) {
-        const items = snapshot.docs
-          .map(d => ({ id: d.id, ...d.data() }))
-          .filter((x: any) => x && x.id && !deletedItemIds.has(x.id)) as any[];
+      const items = snapshot.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .filter((x: any) => x && x.id && !deletedItemIds.has(x.id)) as any[];
 
-        mergedSettings = {
-          ...mergedSettings,
-          [field]: items
-        };
-
-        const idbKey = fieldToIdbKey[field];
-        if (idbKey) {
-          idbSet(idbKey, items).catch(() => {});
-        }
-        triggerCallback();
-      } else if (!quotaState.isExhausted) {
-        // If subcollection is empty in Firestore but we have local/default items, seed them
-        const localItems = (mergedSettings as any)[field];
-        if (Array.isArray(localItems) && localItems.length > 0 && localItems.length <= 100) {
-          localItems.forEach((item) => {
-            if (item && item.id && !deletedItemIds.has(item.id)) {
-              safeFirestoreWrite(`seedSubcol_${field}`, () =>
-                setDoc(doc(db, "settings", "global", field, item.id), item)
-              );
-            }
-          });
-        }
-      }
+      // Exact authoritative state from Firestore subcollection
+      mergedSettings = { ...mergedSettings, [field]: items };
+      const idbKey = fieldToIdbKey[field];
+      if (idbKey) idbSet(idbKey, items).catch(() => {});
+      triggerCallback();
     }, (err) => {
       console.warn(`Error in onSnapshot for settings/global/${field}:`, err?.message || err);
     });
@@ -1234,36 +1227,60 @@ export const firebaseStorage = {
         { id: "accessoryMaterials", items: (updatedSettings.accessoryMaterials || []) as any[], hasChanged: true },
       ];
 
-      // Parallel save of subcollections to Firestore
+      // Save each material list to individual docs in subcollection and keep metadata
       await Promise.allSettled(
         collectionsToSave
           .filter((col) => col.hasChanged)
           .map(async (col) => {
             try {
-              const cachedCol = cached ? ((cached as any)[col.id] as any[]) : undefined;
+              // 1. Lightweight metadata write to settings/{col.id} (avoid 1MB document limit)
+              await safeFirestoreWrite(`saveSettingsDoc_${col.id}`, () =>
+                setDoc(doc(db, "settings", col.id), {
+                  count: col.items.length,
+                  updatedAt: Date.now()
+                })
+              );
+
+              // 2. Handle subcollection writes & deletions
               const batchOps: ((batch: WriteBatch) => void)[] = [];
 
-              // 1. Write/update new and modified items only
-              col.items.forEach((item) => {
-                deletedItemIds.delete(item.id);
-                const cachedItem = cachedCol?.find((x: any) => x.id === item.id);
-                if (!cachedItem || !isMaterialItemEqual(item, cachedItem)) {
-                  const docRef = doc(db, "settings", "global", col.id, item.id);
-                  batchOps.push((batch) => batch.set(docRef, item));
+              if (col.items.length === 0) {
+                // If user cleared this category, delete all existing docs in subcollection
+                try {
+                  const snap = await getDocs(collection(db, "settings", "global", col.id));
+                  snap.docs.forEach((docSnap) => {
+                    batchOps.push((batch) => batch.delete(docSnap.ref));
+                  });
+                } catch (delErr) {
+                  console.warn(`Error querying subcollection for deletion ${col.id}:`, delErr);
                 }
-              });
-
-              // 2. Delete ONLY items that were explicitly marked as deleted in deletedItemIds
-              if (cachedCol) {
-                cachedCol.forEach((oldItem: any) => {
-                  if (deletedItemIds.has(oldItem.id)) {
-                    const docRef = doc(db, "settings", "global", col.id, oldItem.id);
-                    batchOps.push((batch) => batch.delete(docRef));
+              } else {
+                const currentItemIds = new Set<string>();
+                col.items.forEach((item) => {
+                  if (item && item.id) {
+                    currentItemIds.add(item.id);
+                    deletedItemIds.delete(item.id);
+                    const cachedCol = cached ? ((cached as any)[col.id] as any[]) : undefined;
+                    const cachedItem = cachedCol?.find((x: any) => x.id === item.id);
+                    if (!cachedItem || !isMaterialItemEqual(item, cachedItem)) {
+                      const docRef = doc(db, "settings", "global", col.id, item.id);
+                      batchOps.push((batch) => batch.set(docRef, item));
+                    }
                   }
                 });
+
+                // Also delete any removed items
+                const cachedCol = cached ? ((cached as any)[col.id] as any[]) : undefined;
+                if (cachedCol) {
+                  cachedCol.forEach((oldItem: any) => {
+                    if (oldItem && oldItem.id && (!currentItemIds.has(oldItem.id) || deletedItemIds.has(oldItem.id))) {
+                      const docRef = doc(db, "settings", "global", col.id, oldItem.id);
+                      batchOps.push((batch) => batch.delete(docRef));
+                    }
+                  });
+                }
               }
 
-              // 3. Perform fast atomic batch writes
               if (batchOps.length > 0) {
                 await commitBatchOperations(batchOps);
               }
@@ -1333,10 +1350,10 @@ export const firebaseStorage = {
       }).catch(() => {});
     }
 
-    // 2. Persist to Firestore directly in background without blocking UI
-    safeFirestoreWrite("saveSingleMaterial", () =>
-      setDoc(doc(db, "settings", "global", collectionKey, item.id), item)
-    );
+    // 2. Persist to Firestore subcollection directly in background
+    safeFirestoreWrite("saveSingleMaterial", async () => {
+      await setDoc(doc(db, "settings", "global", collectionKey, item.id), item);
+    });
   },
 
   async deleteSingleMaterial(
@@ -1368,12 +1385,19 @@ export const firebaseStorage = {
       try {
         localStorage.setItem(LOCAL_STORAGE_KEYS.SETTINGS, JSON.stringify(currentCachedSettings));
       } catch {}
+
+      // Sync updated full catalog to server cache
+      fetch("/api/catalog/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ catalog: currentCachedSettings }),
+      }).catch(() => {});
     }
 
-    // 2. Delete from Firestore directly in background
-    safeFirestoreWrite("deleteSingleMaterial", () =>
-      deleteDoc(doc(db, "settings", "global", collectionKey, itemId))
-    );
+    // 2. Delete from Firestore subcollection directly in background
+    safeFirestoreWrite("deleteSingleMaterial", async () => {
+      await deleteDoc(doc(db, "settings", "global", collectionKey, itemId));
+    });
   },
 
   async incrementEmployeeAiUsage(employeeId: string): Promise<void> {
@@ -1440,9 +1464,10 @@ export const firebaseStorage = {
     if (onProgress) onProgress("กำลังรวบรวมข้อมูลทั้งหมดจากระบบเครื่องนี้...", 10);
 
     // 1. Gather all local settings
-    const settings = currentCachedSettings || (await idbGet<Settings>(PERMANENT_KEYS.SETTINGS)) || DEFAULT_SETTINGS;
+    const baseSettings = currentCachedSettings || (await idbGet<Settings>(PERMANENT_KEYS.SETTINGS)) || DEFAULT_SETTINGS;
+    const settings: Settings = { ...baseSettings };
     
-    // 2. Prepare subcollections
+    // 2. Prepare material collections
     const collectionsToPush: { key: string; label: string; items: any[] }[] = [
       { key: "solidFabricMaterials", label: "ผ้าม่านทึบ", items: settings.solidFabricMaterials || [] },
       { key: "sheerFabricMaterials", label: "ผ้าม่านโปร่ง", items: settings.sheerFabricMaterials || [] },
@@ -1459,6 +1484,15 @@ export const firebaseStorage = {
     let catalogItemsProcessed = 0;
 
     for (const col of collectionsToPush) {
+      // 1. Lightweight metadata write (avoids 1MB document limit)
+      safeFirestoreWrite(`forcePushDoc_${col.key}`, () =>
+        setDoc(doc(db, "settings", col.key), {
+          count: col.items.length,
+          updatedAt: Date.now()
+        })
+      );
+
+      // 2. Subcollection writes if items exist
       if (col.items.length > 0) {
         const batchOps: ((batch: WriteBatch) => void)[] = [];
         col.items.forEach((item) => {
@@ -1478,8 +1512,8 @@ export const firebaseStorage = {
             }
           });
         }
-        catalogItemsProcessed += col.items.length;
       }
+      catalogItemsProcessed += col.items.length;
     }
 
     // 3. Save global settings

@@ -5,6 +5,7 @@ import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { COMPLETE_DEFAULT_SETTINGS } from "./src/lib/defaultCatalogData";
 
 dotenv.config();
 
@@ -45,13 +46,13 @@ function loadServerDataFromDisk(): { apiKey: string | null; catalog: any } {
       const parsed = JSON.parse(raw);
       return {
         apiKey: parsed.apiKey || null,
-        catalog: parsed.catalog || null,
+        catalog: parsed.catalog || { ...COMPLETE_DEFAULT_SETTINGS },
       };
     }
   } catch (err) {
     console.warn("Failed to load server data cache from disk:", err);
   }
-  return { apiKey: null, catalog: null };
+  return { apiKey: null, catalog: { ...COMPLETE_DEFAULT_SETTINGS } };
 }
 
 // Helper function to resolve image payload (base64 or HTTP/HTTPS url)
@@ -143,9 +144,13 @@ async function startServer() {
 
   // Central Catalog Bundle Sync
   app.get("/api/catalog/current", (req, res) => {
+    if (!serverCatalogCache) {
+      serverCatalogCache = { ...COMPLETE_DEFAULT_SETTINGS };
+    }
+
     res.json({ 
       success: true, 
-      hasServerCatalog: !!serverCatalogCache,
+      hasServerCatalog: true,
       catalog: serverCatalogCache 
     });
   });

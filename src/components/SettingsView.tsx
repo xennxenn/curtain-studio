@@ -3,7 +3,7 @@ import {
   Plus, Trash2, Users, Database, ShieldAlert, BadgeCheck, 
   Palette, FileImage, Layers, Tag, Ruler, Sliders, Eye, Lock, Unlock, FolderUp, Edit3, Search, AlertCircle, X, Info, Files, Loader2, CheckCircle2, Zap,
   RefreshCw, Sparkles, ArrowRightLeft, HardDrive, Check, ExternalLink, AlertTriangle, ArrowRight, CheckSquare, Square,
-  Clock, Calendar, Filter, FolderCheck, Cloud, Key, ShieldCheck, Server, Globe, UploadCloud, Download, FileText
+  Clock, Calendar, Filter, FolderCheck, Cloud, Key, ShieldCheck, Server, Globe, UploadCloud, Download, FileText, RotateCcw
 } from "lucide-react";
 import { Employee, Settings, FabricMaterial, StyleMaterial, HemMaterial } from "../types";
 import { generateId } from "../lib/storage";
@@ -24,7 +24,8 @@ import { getDedicatedGeminiApiKey, saveDedicatedGeminiApiKey, removeDedicatedGem
 interface SettingsViewProps {
   employees: Employee[];
   settings: Settings;
-  onSaveSettings: (settings: Settings, onProgress?: (pct: number) => void) => Promise<void>;
+  onSaveSettings: (settings: Settings, onProgress?: (pct: number) => void, options?: { allowEmptyWipe?: boolean }) => Promise<void>;
+  onSaveGlobalSettings?: (partialSettings: Partial<Settings>) => Promise<void>;
   onSaveSingleMaterial?: (collectionKey: any, item: any) => Promise<void>;
   onDeleteSingleMaterial?: (collectionKey: any, itemId: string) => Promise<void>;
   onSaveEmployee: (employee: Employee) => void;
@@ -36,6 +37,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   employees,
   settings,
   onSaveSettings: propOnSaveSettings,
+  onSaveGlobalSettings,
   onSaveSingleMaterial,
   onDeleteSingleMaterial,
   onSaveEmployee,
@@ -138,7 +140,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     }
 
     // Fast direct single-item update (0 sec, no heavy Google Drive progress popup)
-    if (onSaveSingleMaterial && collectionKey !== "employees" && collectionKey !== "trackMaterials" && collectionKey !== "accessoryMaterials") {
+    if (onSaveSingleMaterial && collectionKey !== "employees") {
       await onSaveSingleMaterial(collectionKey, updatedItem);
     } else if (collectionKey !== "employees") {
       const currentList = ((settings as any)[collectionKey] || []) as any[];
@@ -348,21 +350,45 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     e.target.value = "";
   };
 
+  // Restore Catalog from Server Auto-Backup
+  const handleRestoreServerBackup = async () => {
+    if (!confirm("คุณต้องการกู้คืนแคตตาล็อกวัสดุและสวอชจากระบบสำรองข้อมูลฉุกเฉินของเซิร์ฟเวอร์ใช่หรือไม่?")) {
+      return;
+    }
+    try {
+      clearDeletedItemIds();
+      const res = await fetch("/api/catalog/restore-backup", { method: "POST" });
+      const data = await res.json();
+      if (data.success && data.catalog) {
+        await onSaveSettings(data.catalog, false);
+        showToast("✓ กู้คืนข้อมูลแคตตาล็อกสำเร็จเรียบร้อยแล้ว!", "success");
+      } else {
+        showToast(`ไม่พบข้อมูลสำรอง: ${data.message || "กรุณาลองใหม่อีกครั้ง"}`, "error");
+      }
+    } catch (err: any) {
+      showToast(`กู้คืนข้อมูลไม่สำเร็จ: ${err?.message || err}`, "error");
+    }
+  };
+
   const handleDisconnectDrive = () => {
     clearDriveToken();
     setDriveConnected(false);
     showToast("ยกเลิกการเชื่อมต่อ Google Drive เรียบร้อยแล้ว", "info");
   };
 
-  const onSaveSettings = async (updatedSettings: Settings, isSilentTextSave = true) => {
+  const onSaveSettings = async (updatedSettings: Settings, isSilentTextSave = true, allowEmptyWipe = false) => {
     if (!isSilentTextSave) {
       setIsSaving(true);
       setSaveProgress(0);
     }
     try {
-      await propOnSaveSettings(updatedSettings, (pct) => {
-        if (!isSilentTextSave) setSaveProgress(pct);
-      });
+      await propOnSaveSettings(
+        updatedSettings,
+        (pct) => {
+          if (!isSilentTextSave) setSaveProgress(pct);
+        },
+        { allowEmptyWipe }
+      );
       // Smooth completion toast
       showToast("✓ บันทึกการเปลี่ยนแปลงข้อมูลระบบเรียบร้อยแล้ว", "success");
     } catch (err: any) {
@@ -372,6 +398,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         setIsSaving(false);
         setSaveProgress(null);
       }
+    }
+  };
+
+  const handleSaveGlobalField = async (key: keyof Settings, value: any) => {
+    if (onSaveGlobalSettings) {
+      await onSaveGlobalSettings({ [key]: value });
+    } else {
+      await onSaveSettings({ ...settings, [key]: value }, true);
     }
   };
 
@@ -449,7 +483,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setClearConfirmInput("");
 
     try {
-      await onSaveSettings(updatedSettings, true);
+      await onSaveSettings(updatedSettings, true, true);
       showToast(`✓ ล้างข้อมูล${label} สำเร็จเรียบร้อยแล้ว`, "success");
     } catch (err) {
       showToast(`ไม่สามารถล้างข้อมูลได้: ${err instanceof Error ? err.message : String(err)}`, "error");
@@ -481,7 +515,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setClearConfirmInput("");
 
     try {
-      await onSaveSettings(updatedSettings, true);
+      await onSaveSettings(updatedSettings, true, true);
       showToast("✓ ล้างข้อมูลตั้งต้นและสวอชทั้งหมดออกเป็น 0 รายการเรียบร้อยแล้ว", "success");
     } catch (err: any) {
       showToast(`ไม่สามารถล้างข้อมูลได้: ${err?.message || String(err)}`, "error");
@@ -945,7 +979,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     duplicateItems: DuplicateReviewItem[],
     typeTitle: string
   ) => {
-    let updatedSettings: Settings = { ...settings };
+    const currentBase = firebaseStorage.getCurrentCachedSettings() || settings;
+    let updatedSettings: Settings = { ...currentBase, ...settings };
     let overwrittenCount = 0;
     let addedCount = newItemsToAdd.length;
 
@@ -979,16 +1014,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     };
 
     if (dbType === "solid") {
-      updatedSettings.solidFabricMaterials = applyOverwritesAndAdds(settings.solidFabricMaterials || []);
+      updatedSettings.solidFabricMaterials = applyOverwritesAndAdds(currentBase.solidFabricMaterials || settings.solidFabricMaterials || []);
     } else if (dbType === "sheer") {
-      updatedSettings.sheerFabricMaterials = applyOverwritesAndAdds(settings.sheerFabricMaterials || []);
+      updatedSettings.sheerFabricMaterials = applyOverwritesAndAdds(currentBase.sheerFabricMaterials || settings.sheerFabricMaterials || []);
     } else {
       if (blindSubtype === "Roller Shades") {
-        updatedSettings.rollerMaterials = applyOverwritesAndAdds(settings.rollerMaterials || []);
+        updatedSettings.rollerMaterials = applyOverwritesAndAdds(currentBase.rollerMaterials || settings.rollerMaterials || []);
       } else if (blindSubtype === "Fabric Tape") {
-        updatedSettings.blindTapeMaterials = applyOverwritesAndAdds(settings.blindTapeMaterials || []);
+        updatedSettings.blindTapeMaterials = applyOverwritesAndAdds(currentBase.blindTapeMaterials || settings.blindTapeMaterials || []);
       } else {
-        updatedSettings.blindMaterials = applyOverwritesAndAdds(settings.blindMaterials || []);
+        updatedSettings.blindMaterials = applyOverwritesAndAdds(currentBase.blindMaterials || settings.blindMaterials || []);
       }
     }
 
@@ -2187,7 +2222,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         updated.push(trimmed);
       }
 
-      onSaveSettings({ ...settings, fabricTypes: updated }, true);
+      handleSaveGlobalField("fabricTypes", updated);
       setNameText("");
       showToast(editingIndex !== null ? "✓ อัปเดตคุณสมบัติผ้าเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)" : "✓ เพิ่มคุณสมบัติผ้าเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)", "success");
     };
@@ -2196,7 +2231,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const typeToRemove = currentTypes[index];
       if (confirm(`คุณต้องการลบคุณสมบัติ "${typeToRemove}" ใช่หรือไม่? มีผลกับตัวเลือกข้อมูลผ้าม่าน`)) {
         const updated = currentTypes.filter((_, idx) => idx !== index);
-        onSaveSettings({ ...settings, fabricTypes: updated }, true);
+        handleSaveGlobalField("fabricTypes", updated);
         showToast("✓ ลบคุณสมบัติผ้าเรียบร้อยแล้ว", "info");
       }
     };
@@ -2304,7 +2339,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         updated.push(trimmed);
       }
 
-      onSaveSettings({ ...settings, [fieldKey]: updated }, true);
+      handleSaveGlobalField(fieldKey, updated);
       setNameText("");
       showToast(editingIndex !== null ? "✓ อัปเดตตัวเลือกเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)" : "✓ เพิ่มตัวเลือกเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)", "success");
     };
@@ -2312,7 +2347,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const handleRemove = (index: number) => {
       if (confirm(`คุณต้องการลบตัวเลือก "${items[index]}" ใช่หรือไม่?`)) {
         const updated = items.filter((_, idx) => idx !== index);
-        onSaveSettings({ ...settings, [fieldKey]: updated }, true);
+        handleSaveGlobalField(fieldKey, updated);
         showToast("✓ ลบตัวเลือกเรียบร้อยแล้ว", "info");
       }
     };
@@ -2456,6 +2491,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
             {/* Offline / Local JSON Backup and Restore */}
             <div className="flex items-center gap-1.5 pl-2 border-l border-white/15">
+              <button
+                type="button"
+                onClick={handleRestoreServerBackup}
+                className="px-3.5 py-2.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/30 text-xs font-bold transition inline-flex items-center gap-1.5 cursor-pointer shadow-sm"
+                title="กู้คืนแคตตาล็อกวัสดุและสวอชจากระบบสำรองข้อมูลอัตโนมัติของเซิร์ฟเวอร์"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>กู้คืนแคตตาล็อก</span>
+              </button>
               <button
                 type="button"
                 onClick={handleExportJsonBackup}
@@ -4658,7 +4702,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       if (trimmed) {
                         await saveDedicatedGeminiApiKey(trimmed);
                       }
-                      await onSaveSettings({ ...settings, customGeminiApiKey: trimmed || undefined });
+                      await handleSaveGlobalField("customGeminiApiKey", trimmed || undefined);
                       showToast("บันทึกคีย์ Gemini ส่วนตัวเรียบร้อยแล้ว! ข้อมูลจะถูกเก็บถาวรและเริ่มใช้งานทันที", "success");
                     }}
                     className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap"
@@ -4671,7 +4715,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       onClick={async () => {
                         setCustomApiKey("");
                         await removeDedicatedGeminiApiKey();
-                        await onSaveSettings({ ...settings, customGeminiApiKey: undefined });
+                        await handleSaveGlobalField("customGeminiApiKey", undefined);
                         showToast("ลบคีย์ส่วนตัวแล้ว ระบบจะกลับไปใช้คีย์กลางฟรีของระบบ", "info");
                       }}
                       className="bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold px-3 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap"
@@ -4703,7 +4747,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <select
                     value={settings.defaultDistanceLeft || "พอดีเฟรม"}
                     onChange={(e) => {
-                      onSaveSettings({ ...settings, defaultDistanceLeft: e.target.value });
+                      handleSaveGlobalField("defaultDistanceLeft", e.target.value);
                     }}
                     className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer font-bold"
                   >
@@ -4720,7 +4764,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <select
                     value={settings.defaultDistanceRight || "พอดีเฟรม"}
                     onChange={(e) => {
-                      onSaveSettings({ ...settings, defaultDistanceRight: e.target.value });
+                      handleSaveGlobalField("defaultDistanceRight", e.target.value);
                     }}
                     className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer font-bold"
                   >
@@ -4737,7 +4781,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   <select
                     value={settings.defaultDistanceTop || "ติดเพดาน"}
                     onChange={(e) => {
-                      onSaveSettings({ ...settings, defaultDistanceTop: e.target.value });
+                      handleSaveGlobalField("defaultDistanceTop", e.target.value);
                     }}
                     className="w-full bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer font-bold"
                   >
@@ -4770,7 +4814,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     <select
                       value={settings.companyLogoSize || "L"}
                       onChange={(e) => {
-                        onSaveSettings({ ...settings, companyLogoSize: e.target.value as "S" | "M" | "L" | "XL" });
+                        handleSaveGlobalField("companyLogoSize", e.target.value as "S" | "M" | "L" | "XL");
                       }}
                       className="bg-slate-50 border border-slate-200 text-slate-800 text-xs rounded-xl px-2 py-2.5 outline-none focus:ring-2 focus:ring-indigo-500/20 cursor-pointer"
                     >
@@ -4790,7 +4834,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       const file = e.target.files?.[0];
                       if (file) {
                         processImage(file, (base64) => {
-                          onSaveSettings({ ...settings, companyLogoBase64: base64 });
+                          handleSaveGlobalField("companyLogoBase64", base64);
                           showToast("อัปโหลดและบันทึกโลโก้บริษัทเรียบร้อยแล้ว!", "success");
                         });
                       }
@@ -4808,7 +4852,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       <button
                         type="button"
                         onClick={() => {
-                          onSaveSettings({ ...settings, companyLogoBase64: undefined });
+                          handleSaveGlobalField("companyLogoBase64", undefined);
                           showToast("คืนค่าโลโก้เป็นแบบเริ่มต้นเรียบร้อยแล้ว!", "info");
                         }}
                         className="bg-rose-50 text-rose-600 hover:bg-rose-100 text-xs font-bold px-4 py-2.5 rounded-xl transition cursor-pointer whitespace-nowrap"

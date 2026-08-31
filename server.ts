@@ -1,7 +1,9 @@
 import express from "express";
+import http from "http";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import { WebSocketServer, WebSocket } from "ws";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
@@ -20,39 +22,88 @@ const __dirnameResolved = typeof __dirname !== "undefined"
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const CONFIG_FILE_PATH = path.join(DATA_DIR, "server-data-cache.json");
+const DATABASE_FILE_PATH = path.join(DATA_DIR, "server-database.json");
 
-// Helper to safely persist server cache to disk
-function saveServerDataToDisk(apiKey: string | null, catalog: any) {
+const DEFAULT_EMPLOYEES = [
+  { id: "1", name: "ผู้ดูแลระบบ (Admin)", aiQuota: 100, aiUsed: 0, username: "T58121", password: "Admin", role: "admin" },
+  { id: "2", name: "คุณอรพรรณ (Designer)", aiQuota: 30, aiUsed: 4, username: "designer1", password: "123", role: "designer" },
+  { id: "3", name: "คุณธีรเดช (Sales Representative)", aiQuota: 30, aiUsed: 12, username: "sales1", password: "123", role: "installer" },
+];
+
+interface ServerDatabaseState {
+  apiKey: string | null;
+  catalog: any;
+  jobs: any[];
+  windows: any[];
+  employees: any[];
+  savedAt: string;
+}
+
+// Helper to safely persist complete server database to disk
+function saveServerDatabaseToDisk(state: {
+  apiKey: string | null;
+  catalog: any;
+  jobs: any[];
+  windows: any[];
+  employees: any[];
+}) {
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
-    const payload = {
-      apiKey: apiKey || null,
-      catalog: catalog || null,
+    const payload: ServerDatabaseState = {
+      apiKey: state.apiKey || null,
+      catalog: state.catalog || { ...COMPLETE_DEFAULT_SETTINGS },
+      jobs: state.jobs || [],
+      windows: state.windows || [],
+      employees: state.employees && state.employees.length > 0 ? state.employees : DEFAULT_EMPLOYEES,
       savedAt: new Date().toISOString(),
     };
-    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+    fs.writeFileSync(DATABASE_FILE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+    // Also save legacy config file for compatibility
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify({ apiKey: payload.apiKey, catalog: payload.catalog, savedAt: payload.savedAt }, null, 2), "utf-8");
   } catch (err) {
-    console.warn("Failed to write server data cache to disk:", err);
+    console.warn("Failed to write server database to disk:", err);
   }
 }
 
-// Helper to load server cache from disk on startup
-function loadServerDataFromDisk(): { apiKey: string | null; catalog: any } {
+// Helper to load complete server database from disk on startup
+function loadServerDataFromDisk(): ServerDatabaseState {
   try {
-    if (fs.existsSync(CONFIG_FILE_PATH)) {
+    if (fs.existsSync(DATABASE_FILE_PATH)) {
+      const raw = fs.readFileSync(DATABASE_FILE_PATH, "utf-8");
+      const parsed = JSON.parse(raw);
+      return {
+        apiKey: parsed.apiKey || null,
+        catalog: parsed.catalog || { ...COMPLETE_DEFAULT_SETTINGS },
+        jobs: Array.isArray(parsed.jobs) ? parsed.jobs : [],
+        windows: Array.isArray(parsed.windows) ? parsed.windows : [],
+        employees: Array.isArray(parsed.employees) && parsed.employees.length > 0 ? parsed.employees : DEFAULT_EMPLOYEES,
+        savedAt: parsed.savedAt || new Date().toISOString(),
+      };
+    } else if (fs.existsSync(CONFIG_FILE_PATH)) {
       const raw = fs.readFileSync(CONFIG_FILE_PATH, "utf-8");
       const parsed = JSON.parse(raw);
       return {
         apiKey: parsed.apiKey || null,
         catalog: parsed.catalog || { ...COMPLETE_DEFAULT_SETTINGS },
+        jobs: [],
+        windows: [],
+        employees: DEFAULT_EMPLOYEES,
+        savedAt: new Date().toISOString(),
       };
     }
   } catch (err) {
-    console.warn("Failed to load server data cache from disk:", err);
+    console.warn("Failed to load server database from disk:", err);
   }
-  return { apiKey: null, catalog: { ...COMPLETE_DEFAULT_SETTINGS } };
+  return {
+    apiKey: null,
+    catalog: { ...COMPLETE_DEFAULT_SETTINGS },
+    jobs: [],
+    windows: [],
+    employees: DEFAULT_EMPLOYEES,
+    savedAt: new Date().toISOString(),
+  };
 }
 
 // Helper function to resolve image payload (base64 or HTTP/HTTPS url)
@@ -93,20 +144,219 @@ async function resolveImagePayload(imageInput: string): Promise<{ mimeType: stri
 
 async function startServer() {
   const app = express();
+  const server = http.createServer(app);
+  const wss = new WebSocketServer({ server, path: "/ws" });
   const PORT = 3000;
 
   // Increase payload limit for base64 image transfers
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-  // Load server-side persisted data from disk if available
+  // Load server-side persisted data from disk on startup
   const initialDiskData = loadServerDataFromDisk();
 
   // Central stored API key in memory (set by Admin)
   let serverConfiguredApiKey: string | null = initialDiskData.apiKey;
 
-  // Central in-memory catalog sync cache
-  let serverCatalogCache: any = initialDiskData.catalog;
+  // Central in-memory authoritative state caches
+  let serverCatalogCache: any = initialDiskData.catalog || { ...COMPLETE_DEFAULT_SETTINGS };
+  let serverJobsCache: any[] = initialDiskData.jobs || [];
+  let serverWindowsCache: any[] = initialDiskData.windows || [];
+  let serverEmployeesCache: any[] = initialDiskData.employees || DEFAULT_EMPLOYEES;
+
+  const saveCurrentServerState = () => {
+    saveServerDatabaseToDisk({
+      apiKey: serverConfiguredApiKey,
+      catalog: serverCatalogCache,
+      jobs: serverJobsCache,
+      windows: serverWindowsCache,
+      employees: serverEmployeesCache,
+    });
+  };
+
+  // Set of connected WebSocket clients
+  const activeClients = new Set<WebSocket>();
+
+  // Broadcast helper function to push realtime events to all connected clients
+  function broadcast(event: { type: string; data?: any; senderId?: string }, excludeWs?: WebSocket) {
+    const msg = JSON.stringify({ ...event, timestamp: Date.now() });
+    for (const client of activeClients) {
+      if (client !== excludeWs && client.readyState === WebSocket.OPEN) {
+        try {
+          client.send(msg);
+        } catch (e) {
+          console.warn("[WS] Failed to send WebSocket message:", e);
+        }
+      }
+    }
+  }
+
+  // Handle WebSocket connections
+  wss.on("connection", (ws: WebSocket, req) => {
+    activeClients.add(ws);
+    console.log(`[WS] Client connected from ${req.socket.remoteAddress}. Active clients: ${activeClients.size}`);
+
+    // Send complete initial snapshot to newly connected client
+    try {
+      ws.send(JSON.stringify({
+        type: "INIT",
+        data: {
+          catalog: serverCatalogCache,
+          jobs: serverJobsCache,
+          windows: serverWindowsCache,
+          employees: serverEmployeesCache,
+          serverTime: Date.now(),
+          connectedCount: activeClients.size,
+        },
+      }));
+    } catch (err) {
+      console.warn("[WS] Error sending INIT snapshot:", err);
+    }
+
+    // Broadcast client count to all clients
+    broadcast({ type: "CLIENT_COUNT", data: { count: activeClients.size } });
+
+    ws.on("message", (rawMessage) => {
+      try {
+        const parsed = JSON.parse(rawMessage.toString());
+        const { type, data, senderId } = parsed;
+
+        if (type === "PING") {
+          ws.send(JSON.stringify({ type: "PONG", timestamp: Date.now() }));
+          return;
+        }
+
+        if (type === "SETTINGS_UPDATE") {
+          if (data && typeof data === "object") {
+            const prev = serverCatalogCache || {};
+            const merged = { ...prev, ...data };
+            const materialKeys = [
+              "solidFabricMaterials", "sheerFabricMaterials", "blindMaterials",
+              "rollerMaterials", "blindTapeMaterials", "styleMaterials",
+              "hemMaterials", "trackMaterials", "accessoryMaterials"
+            ];
+            materialKeys.forEach((k) => {
+              if (Array.isArray(data[k])) {
+                merged[k] = data[k];
+              }
+            });
+            serverCatalogCache = merged;
+            saveCurrentServerState();
+            broadcast({ type: "SETTINGS_UPDATE", data: serverCatalogCache, senderId }, ws);
+          }
+        } else if (type === "MATERIAL_SAVE") {
+          const { collectionKey, item } = data || {};
+          if (collectionKey && item && item.id) {
+            const list = Array.isArray(serverCatalogCache[collectionKey]) ? [...serverCatalogCache[collectionKey]] : [];
+            const idx = list.findIndex((x: any) => x.id === item.id);
+            if (idx >= 0) list[idx] = item;
+            else list.push(item);
+            serverCatalogCache[collectionKey] = list;
+            saveCurrentServerState();
+            broadcast({ type: "MATERIAL_SAVE", data: { collectionKey, item }, senderId }, ws);
+          }
+        } else if (type === "MATERIAL_DELETE") {
+          const { collectionKey, itemId } = data || {};
+          if (collectionKey && itemId) {
+            const list = Array.isArray(serverCatalogCache[collectionKey]) ? [...serverCatalogCache[collectionKey]] : [];
+            serverCatalogCache[collectionKey] = list.filter((x: any) => x.id !== itemId);
+            saveCurrentServerState();
+            broadcast({ type: "MATERIAL_DELETE", data: { collectionKey, itemId }, senderId }, ws);
+          }
+        } else if (type === "JOB_SAVE") {
+          if (data && data.id) {
+            const idx = serverJobsCache.findIndex((j: any) => j.id === data.id);
+            if (idx >= 0) serverJobsCache[idx] = data;
+            else serverJobsCache.unshift(data);
+            saveCurrentServerState();
+            broadcast({ type: "JOB_SAVE", data, senderId }, ws);
+          }
+        } else if (type === "JOB_DELETE") {
+          const jobId = typeof data === "string" ? data : data?.jobId;
+          if (jobId) {
+            serverJobsCache = serverJobsCache.filter((j: any) => j.id !== jobId);
+            serverWindowsCache = serverWindowsCache.filter((w: any) => w.jobId !== jobId);
+            saveCurrentServerState();
+            broadcast({ type: "JOB_DELETE", data: { jobId }, senderId }, ws);
+          }
+        } else if (type === "WINDOW_SAVE") {
+          if (data && data.id) {
+            const idx = serverWindowsCache.findIndex((w: any) => w.id === data.id);
+            if (idx >= 0) serverWindowsCache[idx] = data;
+            else serverWindowsCache.push(data);
+            saveCurrentServerState();
+            broadcast({ type: "WINDOW_SAVE", data, senderId }, ws);
+          }
+        } else if (type === "WINDOW_DELETE") {
+          const windowId = typeof data === "string" ? data : data?.windowId;
+          if (windowId) {
+            serverWindowsCache = serverWindowsCache.filter((w: any) => w.id !== windowId);
+            saveCurrentServerState();
+            broadcast({ type: "WINDOW_DELETE", data: { windowId }, senderId }, ws);
+          }
+        } else if (type === "EMPLOYEE_SAVE") {
+          if (data && data.id) {
+            const idx = serverEmployeesCache.findIndex((e: any) => e.id === data.id);
+            if (idx >= 0) serverEmployeesCache[idx] = data;
+            else serverEmployeesCache.push(data);
+            saveCurrentServerState();
+            broadcast({ type: "EMPLOYEE_SAVE", data, senderId }, ws);
+          }
+        } else if (type === "EMPLOYEE_DELETE") {
+          const empId = typeof data === "string" ? data : data?.employeeId;
+          if (empId) {
+            serverEmployeesCache = serverEmployeesCache.filter((e: any) => e.id !== empId);
+            saveCurrentServerState();
+            broadcast({ type: "EMPLOYEE_DELETE", data: { employeeId: empId }, senderId }, ws);
+          }
+        } else if (type === "FORCE_SYNC_ALL") {
+          if (data) {
+            if (data.catalog) serverCatalogCache = data.catalog;
+            if (Array.isArray(data.jobs)) serverJobsCache = data.jobs;
+            if (Array.isArray(data.windows)) serverWindowsCache = data.windows;
+            if (Array.isArray(data.employees) && data.employees.length > 0) serverEmployeesCache = data.employees;
+            saveCurrentServerState();
+            broadcast({
+              type: "FULL_STATE_UPDATE",
+              data: {
+                catalog: serverCatalogCache,
+                jobs: serverJobsCache,
+                windows: serverWindowsCache,
+                employees: serverEmployeesCache,
+              },
+              senderId,
+            }, ws);
+          }
+        }
+      } catch (err) {
+        console.warn("[WS] Error handling message:", err);
+      }
+    });
+
+    ws.on("close", () => {
+      activeClients.delete(ws);
+      console.log(`[WS] Client disconnected. Active clients: ${activeClients.size}`);
+      broadcast({ type: "CLIENT_COUNT", data: { count: activeClients.size } });
+    });
+
+    ws.on("error", (e) => {
+      console.warn("[WS] Client socket error:", e);
+      activeClients.delete(ws);
+    });
+  });
+
+  // Keep-alive heartbeat every 25s
+  setInterval(() => {
+    for (const ws of activeClients) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.ping();
+        } catch {
+          activeClients.delete(ws);
+        }
+      }
+    }
+  }, 25000);
 
   // Shared lazy initializer for Gemini Client
   let aiClient: GoogleGenAI | null = null;
@@ -114,7 +364,7 @@ async function startServer() {
     if (customApiKey && typeof customApiKey === "string" && customApiKey.trim().length > 10) {
       if (serverConfiguredApiKey !== customApiKey.trim()) {
         serverConfiguredApiKey = customApiKey.trim();
-        saveServerDataToDisk(serverConfiguredApiKey, serverCatalogCache);
+        saveCurrentServerState();
       }
     }
     const keyToUse = (serverConfiguredApiKey && serverConfiguredApiKey.trim().length > 10)
@@ -139,10 +389,184 @@ async function startServer() {
 
   // API endpoints
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok", time: new Date().toISOString() });
+    res.json({
+      status: "ok",
+      time: new Date().toISOString(),
+      activeClients: activeClients.size,
+      itemsCount: {
+        jobs: serverJobsCache.length,
+        windows: serverWindowsCache.length,
+        employees: serverEmployeesCache.length,
+        fabrics: (serverCatalogCache.solidFabricMaterials || []).length,
+      }
+    });
   });
 
-  // Central Catalog Bundle Sync
+  // Full Realtime Server State Snapshot (REST API fallback)
+  app.get("/api/realtime/state", (req, res) => {
+    res.json({
+      success: true,
+      data: {
+        catalog: serverCatalogCache,
+        jobs: serverJobsCache,
+        windows: serverWindowsCache,
+        employees: serverEmployeesCache,
+        connectedCount: activeClients.size,
+        serverTime: Date.now(),
+      }
+    });
+  });
+
+  // Realtime Sync Endpoints for REST Clients
+  app.post("/api/realtime/sync-settings", (req, res) => {
+    const { settings, senderId } = req.body;
+    if (settings && typeof settings === "object") {
+      serverCatalogCache = { ...serverCatalogCache, ...settings };
+      saveCurrentServerState();
+      broadcast({ type: "SETTINGS_UPDATE", data: serverCatalogCache, senderId });
+      res.json({ success: true, message: "บันทึกและบรอดแคสต์ข้อมูลการตั้งค่าเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูลการตั้งค่าไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/sync-material", (req, res) => {
+    const { collectionKey, item, senderId } = req.body;
+    if (collectionKey && item && item.id) {
+      const list = Array.isArray(serverCatalogCache[collectionKey]) ? [...serverCatalogCache[collectionKey]] : [];
+      const idx = list.findIndex((x: any) => x.id === item.id);
+      if (idx >= 0) list[idx] = item;
+      else list.push(item);
+      serverCatalogCache[collectionKey] = list;
+      saveCurrentServerState();
+      broadcast({ type: "MATERIAL_SAVE", data: { collectionKey, item }, senderId });
+      res.json({ success: true, message: "บันทึกและบรอดแคสต์วัสดุเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูลวัสดุไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/delete-material", (req, res) => {
+    const { collectionKey, itemId, senderId } = req.body;
+    if (collectionKey && itemId) {
+      const list = Array.isArray(serverCatalogCache[collectionKey]) ? [...serverCatalogCache[collectionKey]] : [];
+      serverCatalogCache[collectionKey] = list.filter((x: any) => x.id !== itemId);
+      saveCurrentServerState();
+      broadcast({ type: "MATERIAL_DELETE", data: { collectionKey, itemId }, senderId });
+      res.json({ success: true, message: "ลบและบรอดแคสต์วัสดุเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูลไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/sync-job", (req, res) => {
+    const { job, senderId } = req.body;
+    if (job && job.id) {
+      const idx = serverJobsCache.findIndex((j: any) => j.id === job.id);
+      if (idx >= 0) serverJobsCache[idx] = job;
+      else serverJobsCache.unshift(job);
+      saveCurrentServerState();
+      broadcast({ type: "JOB_SAVE", data: job, senderId });
+      res.json({ success: true, message: "บันทึกและบรอดแคสต์งานเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูลงานไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/delete-job", (req, res) => {
+    const { jobId, senderId } = req.body;
+    if (jobId) {
+      serverJobsCache = serverJobsCache.filter((j: any) => j.id !== jobId);
+      serverWindowsCache = serverWindowsCache.filter((w: any) => w.jobId !== jobId);
+      saveCurrentServerState();
+      broadcast({ type: "JOB_DELETE", data: { jobId }, senderId });
+      res.json({ success: true, message: "ลบและบรอดแคสต์งานเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูล jobId ไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/sync-window", (req, res) => {
+    const { window, senderId } = req.body;
+    if (window && window.id) {
+      const idx = serverWindowsCache.findIndex((w: any) => w.id === window.id);
+      if (idx >= 0) serverWindowsCache[idx] = window;
+      else serverWindowsCache.push(window);
+      saveCurrentServerState();
+      broadcast({ type: "WINDOW_SAVE", data: window, senderId });
+      res.json({ success: true, message: "บันทึกและบรอดแคสต์หน้าต่างเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูลหน้าต่างไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/delete-window", (req, res) => {
+    const { windowId, senderId } = req.body;
+    if (windowId) {
+      serverWindowsCache = serverWindowsCache.filter((w: any) => w.id !== windowId);
+      saveCurrentServerState();
+      broadcast({ type: "WINDOW_DELETE", data: { windowId }, senderId });
+      res.json({ success: true, message: "ลบและบรอดแคสต์หน้าต่างเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูล windowId ไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/sync-employee", (req, res) => {
+    const { employee, senderId } = req.body;
+    if (employee && employee.id) {
+      const idx = serverEmployeesCache.findIndex((e: any) => e.id === employee.id);
+      if (idx >= 0) serverEmployeesCache[idx] = employee;
+      else serverEmployeesCache.push(employee);
+      saveCurrentServerState();
+      broadcast({ type: "EMPLOYEE_SAVE", data: employee, senderId });
+      res.json({ success: true, message: "บันทึกและบรอดแคสต์พนักงานเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูลพนักงานไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/delete-employee", (req, res) => {
+    const { employeeId, senderId } = req.body;
+    if (employeeId) {
+      serverEmployeesCache = serverEmployeesCache.filter((e: any) => e.id !== employeeId);
+      saveCurrentServerState();
+      broadcast({ type: "EMPLOYEE_DELETE", data: { employeeId }, senderId });
+      res.json({ success: true, message: "ลบและบรอดแคสต์พนักงานเรียบร้อยแล้ว" });
+    } else {
+      res.status(400).json({ success: false, message: "ข้อมูล employeeId ไม่ถูกต้อง" });
+    }
+  });
+
+  app.post("/api/realtime/sync-all", (req, res) => {
+    const { catalog, jobs, windows, employees, senderId } = req.body;
+    if (catalog) serverCatalogCache = catalog;
+    if (Array.isArray(jobs)) serverJobsCache = jobs;
+    if (Array.isArray(windows)) serverWindowsCache = windows;
+    if (Array.isArray(employees) && employees.length > 0) serverEmployeesCache = employees;
+    saveCurrentServerState();
+    broadcast({
+      type: "FULL_STATE_UPDATE",
+      data: {
+        catalog: serverCatalogCache,
+        jobs: serverJobsCache,
+        windows: serverWindowsCache,
+        employees: serverEmployeesCache,
+      },
+      senderId,
+    });
+    res.json({
+      success: true,
+      message: "ซิงค์ฐานข้อมูลทั้งหมดขึ้นเซิร์ฟเวอร์และบรอดแคสต์ไปยังทุกเครื่องเรียบร้อยแล้ว",
+      counts: {
+        jobs: serverJobsCache.length,
+        windows: serverWindowsCache.length,
+        employees: serverEmployeesCache.length,
+      }
+    });
+  });
+
+  // Central Catalog Bundle Sync (Legacy API compatibility)
   app.get("/api/catalog/current", (req, res) => {
     if (!serverCatalogCache) {
       serverCatalogCache = { ...COMPLETE_DEFAULT_SETTINGS };
@@ -156,13 +580,61 @@ async function startServer() {
   });
 
   app.post("/api/catalog/sync", (req, res) => {
-    const { catalog } = req.body;
+    const { catalog, allowEmptyWipe } = req.body;
     if (catalog && typeof catalog === "object") {
-      serverCatalogCache = catalog;
-      saveServerDataToDisk(serverConfiguredApiKey, serverCatalogCache);
+      const prevCatalog = serverCatalogCache || {};
+      const mergedCatalog = { ...prevCatalog, ...catalog };
+
+      const materialKeys = [
+        "solidFabricMaterials",
+        "sheerFabricMaterials",
+        "blindMaterials",
+        "rollerMaterials",
+        "blindTapeMaterials",
+        "styleMaterials",
+        "hemMaterials",
+        "trackMaterials",
+        "accessoryMaterials",
+      ];
+
+      materialKeys.forEach((key) => {
+        if (Array.isArray(catalog[key])) {
+          if (catalog[key].length > 0 || allowEmptyWipe) {
+            mergedCatalog[key] = catalog[key];
+          } else if (Array.isArray(prevCatalog[key]) && prevCatalog[key].length > 0) {
+            mergedCatalog[key] = prevCatalog[key];
+          }
+        } else if (Array.isArray(prevCatalog[key])) {
+          mergedCatalog[key] = prevCatalog[key];
+        }
+      });
+
+      serverCatalogCache = mergedCatalog;
+      saveCurrentServerState();
+      broadcast({ type: "SETTINGS_UPDATE", data: serverCatalogCache });
       res.json({ success: true, message: "บันทึกข้อมูลแคตตาล็อกบนเซิร์ฟเวอร์เรียบร้อยแล้ว" });
     } else {
       res.status(400).json({ success: false, message: "ข้อมูลแคตตาล็อกไม่ถูกต้อง" });
+    }
+  });
+
+  // Emergency Catalog Restore from Backup File
+  app.post("/api/catalog/restore-backup", (req, res) => {
+    try {
+      const backupPath = path.join(process.cwd(), "data", "catalog-backup.json");
+      if (fs.existsSync(backupPath)) {
+        const raw = fs.readFileSync(backupPath, "utf-8");
+        const backupData = JSON.parse(raw);
+        if (backupData && backupData.catalog) {
+          serverCatalogCache = backupData.catalog;
+          saveCurrentServerState();
+          broadcast({ type: "SETTINGS_UPDATE", data: serverCatalogCache });
+          return res.json({ success: true, catalog: backupData.catalog, message: "กู้คืนข้อมูลแคตตาล็อกสำเร็จ" });
+        }
+      }
+      res.status(404).json({ success: false, message: "ไม่พบไฟล์สำรองข้อมูล" });
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err?.message || "เกิดข้อผิดพลาดในการกู้คืน" });
     }
   });
 
@@ -182,11 +654,11 @@ async function startServer() {
     const { apiKey } = req.body;
     if (apiKey && typeof apiKey === "string" && apiKey.trim().length > 10) {
       serverConfiguredApiKey = apiKey.trim();
-      saveServerDataToDisk(serverConfiguredApiKey, serverCatalogCache);
+      saveCurrentServerState();
       res.json({ success: true, message: "บันทึก API Key กลางบนเซิร์ฟเวอร์เรียบร้อยแล้ว ทุกเครื่องสามารถใช้งานได้ทันที" });
     } else if (apiKey === "" || apiKey === null) {
       serverConfiguredApiKey = null;
-      saveServerDataToDisk(serverConfiguredApiKey, serverCatalogCache);
+      saveCurrentServerState();
       res.json({ success: true, message: "ยกเลิก API Key กลางบนเซิร์ฟเวอร์เรียบร้อยแล้ว" });
     } else {
       res.status(400).json({ success: false, message: "รูปแบบ API Key ไม่ถูกต้อง" });
@@ -569,8 +1041,8 @@ CRITICAL SHEER PATTERN REPLICATION RULE:
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[Server] Running on http://localhost:${PORT}`);
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`[Server] Running with Realtime WebSocket on http://localhost:${PORT}`);
   });
 }
 

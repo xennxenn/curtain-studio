@@ -17,6 +17,7 @@ import {
   DEFAULT_SETTINGS,
   LOCAL_STORAGE_KEYS
 } from "./lib/firebaseStorage";
+import { performCompleteDataRecovery } from "./lib/dataRecovery";
 import { getDedicatedGeminiApiKey } from "./lib/indexedDbStorage";
 import { isDriveConnected, backupDatabaseToDrive } from "./lib/googleDrive";
 import { Job, WindowItem, Employee, Settings } from "./types";
@@ -75,8 +76,21 @@ export default function App() {
   const [isExporting, setIsExporting] = useState<boolean>(false);
   const [previewJob, setPreviewJob] = useState<Job | null>(null);
 
-  // Sync / Load Initial Data on Mount with Real-time Firestore Snapshots
+  // Sync / Load Initial Data on Mount with Real-time Firestore Snapshots & Data Recovery
   useEffect(() => {
+    // 0. Perform deep data recovery across all persistent layers (Firestore, IDB, LocalStorage)
+    performCompleteDataRecovery().then((recovered) => {
+      if (recovered.jobs && recovered.jobs.length > 0) {
+        setJobs((prev) => (prev.length === 0 ? recovered.jobs : prev));
+      }
+      if (recovered.windows && recovered.windows.length > 0) {
+        setWindows((prev) => (prev.length === 0 ? recovered.windows : prev));
+      }
+      if (recovered.settings) {
+        setSettings((prev) => ({ ...prev, ...recovered.settings }));
+      }
+    });
+
     const unsubscribeJobs = subscribeJobs((loadedJobs) => {
       setJobs(loadedJobs);
     });
@@ -212,13 +226,29 @@ export default function App() {
   };
 
   // Sync states with real-time Firebase Firestore
-  const handleSaveSettings = async (newSettings: Settings, onProgress?: (pct: number) => void) => {
+  const handleSaveSettings = async (
+    newSettings: Settings,
+    onProgress?: (pct: number) => void,
+    options?: { allowEmptyWipe?: boolean }
+  ) => {
     try {
       setSettings(newSettings);
-      await firebaseStorage.saveSettings(newSettings, onProgress);
+      await firebaseStorage.saveSettings(newSettings, onProgress, options);
     } catch (e: any) {
       console.error("Failed to save settings to Firestore:", e);
       throw e;
+    }
+  };
+
+  const handleSaveGlobalSettings = async (partialSettings: Partial<Settings>) => {
+    setSettings((prev) => ({
+      ...prev,
+      ...partialSettings,
+    }));
+    try {
+      await firebaseStorage.saveGlobalSettings(partialSettings);
+    } catch (e: any) {
+      console.error("Failed to save global settings:", e);
     }
   };
 
@@ -902,6 +932,7 @@ export default function App() {
             employees={employees}
             settings={settings}
             onSaveSettings={handleSaveSettings}
+            onSaveGlobalSettings={handleSaveGlobalSettings}
             onSaveSingleMaterial={handleSaveSingleMaterial}
             onDeleteSingleMaterial={handleDeleteSingleMaterial}
             onSaveEmployee={handleSaveEmployee}

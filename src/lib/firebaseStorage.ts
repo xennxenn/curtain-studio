@@ -27,6 +27,7 @@ import {
   WriteBatch
 } from "firebase/firestore";
 import { Job, WindowItem, Employee, Settings } from "../types";
+import { realtimeSync } from "./realtimeSync";
 
 // Quota Status Management
 export interface QuotaStatus {
@@ -39,12 +40,23 @@ export interface QuotaStatus {
 export const FIRESTORE_UPGRADE_URL =
   "https://console.firebase.google.com/project/gen-lang-client-0145749136/firestore/databases/(default)/data";
 
-let quotaState: QuotaStatus = {
-  isExhausted: false,
-  message: "",
-  upgradeUrl: FIRESTORE_UPGRADE_URL,
-  lastChecked: Date.now()
-};
+let quotaState: QuotaStatus = (() => {
+  try {
+    const raw = localStorage.getItem("firestore_quota_status");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.lastChecked === "number" && Date.now() - parsed.lastChecked < 30 * 60 * 1000) {
+        return parsed;
+      }
+    }
+  } catch {}
+  return {
+    isExhausted: false,
+    message: "",
+    upgradeUrl: FIRESTORE_UPGRADE_URL,
+    lastChecked: Date.now()
+  };
+})();
 
 const quotaListeners = new Set<(status: QuotaStatus) => void>();
 
@@ -59,13 +71,33 @@ export const subscribeQuotaStatus = (listener: (status: QuotaStatus) => void) =>
 export const getQuotaStatus = (): QuotaStatus => quotaState;
 
 export const markQuotaExhausted = (msg?: string) => {
-  console.warn("[Firestore Notice]", msg);
+  const isNewlyExhausted = !quotaState.isExhausted;
+  quotaState = {
+    isExhausted: true,
+    message: msg || "โควตาการเขียนข้อมูล Firestore ฟรีรายวันเต็มชั่วคราว ระบบสลับมาใช้ Local & Server Storage อัตโนมัติ",
+    upgradeUrl: FIRESTORE_UPGRADE_URL,
+    lastChecked: Date.now()
+  };
+  try {
+    localStorage.setItem("firestore_quota_status", JSON.stringify(quotaState));
+  } catch {}
+  if (isNewlyExhausted) {
+    quotaListeners.forEach((listener) => listener(quotaState));
+    console.warn("[Firestore Notice] Quota exhausted. Switched to offline-safe mode:", msg);
+  }
 };
 
 export const resetQuotaStatus = () => {
+  quotaState = {
+    isExhausted: false,
+    message: "",
+    upgradeUrl: FIRESTORE_UPGRADE_URL,
+    lastChecked: Date.now()
+  };
   try {
     localStorage.removeItem("firestore_quota_status");
   } catch {}
+  quotaListeners.forEach((listener) => listener(quotaState));
 };
 
 export const isQuotaError = (err: any): boolean => {
@@ -79,11 +111,17 @@ export const isQuotaError = (err: any): boolean => {
   );
 };
 
-// Safe wrapper for Firestore writes - always tries Firestore
+// Safe wrapper for Firestore writes - skips if quota is exhausted to prevent retry loops
 async function safeFirestoreWrite<T>(opName: string, writeFn: () => Promise<T>): Promise<T | null> {
+  if (quotaState.isExhausted) {
+    return null;
+  }
   try {
     return await writeFn();
   } catch (err: any) {
+    if (isQuotaError(err)) {
+      markQuotaExhausted(err?.message);
+    }
     console.warn(`[Firestore Save Notice] ${opName}:`, err?.message || err);
     return null;
   }
@@ -198,14 +236,22 @@ export async function loadAllMergedLocalWindows(): Promise<WindowItem[]> {
 }
 
 export const subscribeJobs = (callback: (jobs: Job[]) => void) => {
-  // Load from all local backups immediately so user sees existing jobs instantly
+  // 1. Load from all local backups immediately so user sees existing jobs instantly
   loadAllMergedLocalJobs().then((merged) => {
     if (merged.length > 0) {
       callback(merged);
     }
   });
 
-  return onSnapshot(
+  // 2. Realtime WebSocket Broadcast subscription (instant synchronization across all devices)
+  const unsubRealtime = realtimeSync.subscribeJobs((realtimeJobs) => {
+    if (Array.isArray(realtimeJobs) && realtimeJobs.length > 0) {
+      callback(realtimeJobs);
+    }
+  });
+
+  // 3. Secondary Firestore subscription (if configured)
+  const unsubFirestore = onSnapshot(
     collection(db, "jobs"),
     async (snapshot) => {
       const snapList: Job[] = [];
@@ -243,10 +289,15 @@ export const subscribeJobs = (callback: (jobs: Job[]) => void) => {
       if (isQuotaError(err)) {
         markQuotaExhausted(err?.message);
       }
-      console.warn("subscribeJobs Firestore notice (using local cache):", err?.message || err);
+      console.warn("subscribeJobs Firestore notice (using realtime local/server cache):", err?.message || err);
       loadAllMergedLocalJobs().then(callback);
     }
   );
+
+  return () => {
+    unsubRealtime();
+    unsubFirestore();
+  };
 };
 
 export const subscribeWindows = (callback: (windows: WindowItem[]) => void) => {
@@ -256,7 +307,14 @@ export const subscribeWindows = (callback: (windows: WindowItem[]) => void) => {
     }
   });
 
-  return onSnapshot(
+  // Realtime WebSocket Broadcast subscription
+  const unsubRealtime = realtimeSync.subscribeWindows((realtimeWindows) => {
+    if (Array.isArray(realtimeWindows) && realtimeWindows.length > 0) {
+      callback(realtimeWindows);
+    }
+  });
+
+  const unsubFirestore = onSnapshot(
     collection(db, "windows"),
     async (snapshot) => {
       const snapList: WindowItem[] = [];
@@ -293,10 +351,15 @@ export const subscribeWindows = (callback: (windows: WindowItem[]) => void) => {
       if (isQuotaError(err)) {
         markQuotaExhausted(err?.message);
       }
-      console.warn("subscribeWindows Firestore notice (using local cache):", err?.message || err);
+      console.warn("subscribeWindows Firestore notice (using realtime local/server cache):", err?.message || err);
       loadAllMergedLocalWindows().then(callback);
     }
   );
+
+  return () => {
+    unsubRealtime();
+    unsubFirestore();
+  };
 };
 
 export const subscribeEmployees = (callback: (employees: Employee[]) => void) => {
@@ -311,6 +374,13 @@ export const subscribeEmployees = (callback: (employees: Employee[]) => void) =>
     console.warn("Failed to parse cached employees from localStorage", err);
     callback(DEFAULT_EMPLOYEES);
   }
+
+  // Realtime WebSocket Broadcast subscription
+  const unsubRealtime = realtimeSync.subscribeEmployees((realtimeEmployees) => {
+    if (Array.isArray(realtimeEmployees) && realtimeEmployees.length > 0) {
+      callback(realtimeEmployees);
+    }
+  });
 
   const employeesColRef = collection(db, "employees");
 
@@ -330,7 +400,7 @@ export const subscribeEmployees = (callback: (employees: Employee[]) => void) =>
       });
   }
 
-  return onSnapshot(
+  const unsubFirestore = onSnapshot(
     employeesColRef,
     (snapshot) => {
       if (!snapshot.empty) {
@@ -349,7 +419,7 @@ export const subscribeEmployees = (callback: (employees: Employee[]) => void) =>
       if (isQuotaError(err)) {
         markQuotaExhausted(err?.message);
       }
-      console.warn("subscribeEmployees Firestore notice (using local cache or defaults):", err?.message || err);
+      console.warn("subscribeEmployees Firestore notice (using realtime local/server cache):", err?.message || err);
       try {
         const cached = localStorage.getItem(LOCAL_STORAGE_KEYS.EMPLOYEES);
         if (cached) {
@@ -362,18 +432,47 @@ export const subscribeEmployees = (callback: (employees: Employee[]) => void) =>
       }
     }
   );
+
+  return () => {
+    unsubRealtime();
+    unsubFirestore();
+  };
 };
 
 // Keep track of the current in-memory cached settings and explicitly deleted item IDs
 let currentCachedSettings: Settings | null = null;
 const deletedItemIds = new Set<string>();
+const DELETED_IDS_STORAGE_KEY = "curtain_deleted_item_ids";
+
+// Initialize deletedItemIds from localStorage immediately
+try {
+  const savedDeleted = localStorage.getItem(DELETED_IDS_STORAGE_KEY);
+  if (savedDeleted) {
+    const arr = JSON.parse(savedDeleted);
+    if (Array.isArray(arr)) {
+      arr.forEach((id) => {
+        if (typeof id === "string" && id.trim()) deletedItemIds.add(id);
+      });
+    }
+  }
+} catch {}
+
+const persistDeletedItemIds = () => {
+  try {
+    localStorage.setItem(DELETED_IDS_STORAGE_KEY, JSON.stringify(Array.from(deletedItemIds)));
+  } catch {}
+};
 
 export const markItemDeleted = (id: string) => {
-  deletedItemIds.add(id);
+  if (id) {
+    deletedItemIds.add(id);
+    persistDeletedItemIds();
+  }
 };
 
 export const clearDeletedItemIds = () => {
   deletedItemIds.clear();
+  persistDeletedItemIds();
 };
 
 export const subscribeSettings = (callback: (settings: Settings) => void) => {
@@ -414,11 +513,26 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       if (dedicatedApiKey && !parsed.customGeminiApiKey) {
         parsed.customGeminiApiKey = dedicatedApiKey;
       }
+      subDocFields.forEach((field) => {
+        if (Array.isArray((parsed as any)[field])) {
+          (parsed as any)[field] = ((parsed as any)[field] as any[]).filter(
+            (x) => x && x.id && !deletedItemIds.has(x.id)
+          );
+        }
+      });
       currentCachedSettings = parsed;
       callback(parsed);
     } else {
-      currentCachedSettings = { ...DEFAULT_SETTINGS };
-      callback({ ...DEFAULT_SETTINGS });
+      const initSettings: Settings = { ...DEFAULT_SETTINGS };
+      subDocFields.forEach((field) => {
+        if (Array.isArray((initSettings as any)[field])) {
+          (initSettings as any)[field] = ((initSettings as any)[field] as any[]).filter(
+            (x) => x && x.id && !deletedItemIds.has(x.id)
+          );
+        }
+      });
+      currentCachedSettings = initSettings;
+      callback(initSettings);
     }
   } catch (err) {
     console.warn("Failed to parse settings backup from localStorage:", err);
@@ -447,11 +561,82 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
     .then((data) => {
       if (data && data.hasServerCatalog && data.catalog) {
         const serverCat = data.catalog;
-        mergedSettings = {
-          ...mergedSettings,
-          ...serverCat,
-        };
-        triggerCallback();
+        let hasChanges = false;
+
+        // A. Safely merge subcollections without blowing away local items
+        subDocFields.forEach((field) => {
+          if (Array.isArray(serverCat[field]) && serverCat[field].length > 0) {
+            const currentList = Array.isArray((mergedSettings as any)[field]) ? ((mergedSettings as any)[field] as any[]) : [];
+            const currentMap = new Map<string, any>(currentList.map((x: any) => [x.id, x]));
+            const serverItems = serverCat[field].filter((x: any) => x && x.id && !deletedItemIds.has(x.id));
+            
+            let collectionModified = false;
+            serverItems.forEach((sItem: any) => {
+              if (!currentMap.has(sItem.id)) {
+                currentList.push(sItem);
+                collectionModified = true;
+              }
+            });
+
+            if (collectionModified) {
+              (mergedSettings as any)[field] = currentList;
+              hasChanges = true;
+            }
+          }
+        });
+
+        // B. Safely merge global string lists ONLY if not already present locally
+        const globalListKeys: (keyof Settings)[] = [
+          "fabricTypes",
+          "hangingTypes",
+          "usageTypes",
+          "clearanceOptions",
+          "clearanceTopOptions",
+          "curtainStyles",
+          "patterns",
+          "tracks",
+          "accessories"
+        ];
+        globalListKeys.forEach((key) => {
+          if (
+            Array.isArray(serverCat[key]) &&
+            serverCat[key].length > 0 &&
+            (!Array.isArray((mergedSettings as any)[key]) || ((mergedSettings as any)[key] as any[]).length === 0)
+          ) {
+            (mergedSettings as any)[key] = serverCat[key];
+            hasChanges = true;
+          }
+        });
+
+        // C. Scalar global settings
+        if (serverCat.companyLogoBase64 && !mergedSettings.companyLogoBase64) {
+          mergedSettings.companyLogoBase64 = serverCat.companyLogoBase64;
+          hasChanges = true;
+        }
+        if (serverCat.companyLogoSize && !mergedSettings.companyLogoSize) {
+          mergedSettings.companyLogoSize = serverCat.companyLogoSize;
+          hasChanges = true;
+        }
+        if (serverCat.defaultDistanceLeft && !mergedSettings.defaultDistanceLeft) {
+          mergedSettings.defaultDistanceLeft = serverCat.defaultDistanceLeft;
+          hasChanges = true;
+        }
+        if (serverCat.defaultDistanceRight && !mergedSettings.defaultDistanceRight) {
+          mergedSettings.defaultDistanceRight = serverCat.defaultDistanceRight;
+          hasChanges = true;
+        }
+        if (serverCat.defaultDistanceTop && !mergedSettings.defaultDistanceTop) {
+          mergedSettings.defaultDistanceTop = serverCat.defaultDistanceTop;
+          hasChanges = true;
+        }
+        if (serverCat.customGeminiApiKey && !mergedSettings.customGeminiApiKey) {
+          mergedSettings.customGeminiApiKey = serverCat.customGeminiApiKey;
+          hasChanges = true;
+        }
+
+        if (hasChanges) {
+          triggerCallback();
+        }
       }
     })
     .catch(() => {});
@@ -488,7 +673,37 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       let hasIdbUpdates = false;
       const nextMerged = { ...mergedSettings, ...(savedSettingsIdb || {}) };
 
-      // Load server-persisted catalog if available
+      // Helper to apply collection array safely
+      const applySafeCollection = (field: string, incoming: any[] | null | undefined) => {
+        if (Array.isArray(incoming)) {
+          const valid = incoming.filter((x: any) => x && x.id && !deletedItemIds.has(x.id));
+          (nextMerged as any)[field] = valid;
+          hasIdbUpdates = true;
+        }
+      };
+
+      // 1. Check separate IDB collection keys
+      if (solidIdb) applySafeCollection("solidFabricMaterials", solidIdb);
+      if (sheerIdb) applySafeCollection("sheerFabricMaterials", sheerIdb);
+      if (blindIdb) applySafeCollection("blindMaterials", blindIdb);
+      if (rollerIdb) applySafeCollection("rollerMaterials", rollerIdb);
+      if (blindTapeIdb) applySafeCollection("blindTapeMaterials", blindTapeIdb);
+      if (styleIdb) applySafeCollection("styleMaterials", styleIdb);
+      if (hemIdb) applySafeCollection("hemMaterials", hemIdb);
+      if (trackIdb) applySafeCollection("trackMaterials", trackIdb);
+      if (accIdb) applySafeCollection("accessoryMaterials", accIdb);
+
+      // 2. Check savedSettingsIdb collections
+      if (savedSettingsIdb) {
+        subDocFields.forEach((field) => {
+          const val = (savedSettingsIdb as any)[field];
+          if (Array.isArray(val)) {
+            applySafeCollection(field, val);
+          }
+        });
+      }
+
+      // 3. Load server-persisted catalog if available
       try {
         const srvRes = await fetch("/api/catalog/current");
         if (srvRes.ok) {
@@ -496,8 +711,7 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
           if (srvData.success && srvData.catalog) {
             subDocFields.forEach((field) => {
               if (Array.isArray(srvData.catalog[field])) {
-                (nextMerged as any)[field] = srvData.catalog[field];
-                hasIdbUpdates = true;
+                applySafeCollection(field, srvData.catalog[field]);
               }
             });
             if (srvData.catalog.customGeminiApiKey && !nextMerged.customGeminiApiKey) {
@@ -511,53 +725,6 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       if (apiKeyIdb && !nextMerged.customGeminiApiKey) {
         nextMerged.customGeminiApiKey = apiKeyIdb;
         hasIdbUpdates = true;
-      }
-
-      if (savedSettingsIdb) {
-        subDocFields.forEach((field) => {
-          if (Array.isArray((savedSettingsIdb as any)[field])) {
-            (nextMerged as any)[field] = (savedSettingsIdb as any)[field].filter((x: any) => x && x.id && !deletedItemIds.has(x.id));
-            hasIdbUpdates = true;
-          }
-        });
-      } else {
-        // Fallback to separate collection keys if available
-        if (solidIdb && Array.isArray(solidIdb)) {
-          nextMerged.solidFabricMaterials = solidIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
-        if (sheerIdb && Array.isArray(sheerIdb)) {
-          nextMerged.sheerFabricMaterials = sheerIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
-        if (blindIdb && Array.isArray(blindIdb)) {
-          nextMerged.blindMaterials = blindIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
-        if (rollerIdb && Array.isArray(rollerIdb)) {
-          nextMerged.rollerMaterials = rollerIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
-        if (blindTapeIdb && Array.isArray(blindTapeIdb)) {
-          nextMerged.blindTapeMaterials = blindTapeIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
-        if (styleIdb && Array.isArray(styleIdb)) {
-          nextMerged.styleMaterials = styleIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
-        if (hemIdb && Array.isArray(hemIdb)) {
-          nextMerged.hemMaterials = hemIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
-        if (trackIdb && Array.isArray(trackIdb)) {
-          nextMerged.trackMaterials = trackIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
-        if (accIdb && Array.isArray(accIdb)) {
-          nextMerged.accessoryMaterials = accIdb.filter(x => x && x.id && !deletedItemIds.has(x.id));
-          hasIdbUpdates = true;
-        }
       }
 
       if (hasIdbUpdates || savedSettingsIdb) {
@@ -589,7 +756,7 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
     callback({ ...mergedSettings });
   };
 
-  // 1. Subscribe to global document (company logo, distances, patterns, apiKey, etc.)
+  // 1. Subscribe to global document (company logo, distances, patterns, apiKey, fabricTypes, etc.)
   const globalRef = doc(db, "settings", "global");
   const unsubGlobal = onSnapshot(globalRef, (snap) => {
     if (snap.exists()) {
@@ -610,11 +777,39 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
         ...cleanGlobalData
       } = data;
 
+      // Ensure we don't overwrite valid existing local arrays with missing/undefined Firestore fields
+      const globalListKeys: (keyof Settings)[] = [
+        "fabricTypes",
+        "hangingTypes",
+        "usageTypes",
+        "clearanceOptions",
+        "clearanceTopOptions",
+        "curtainStyles",
+        "patterns",
+        "tracks",
+        "accessories"
+      ];
+      
+      const missingFieldsToSync: Partial<Settings> = {};
+      globalListKeys.forEach((key) => {
+        const firestoreVal = (cleanGlobalData as any)[key];
+        const localVal = (mergedSettings as any)[key];
+        if ((!Array.isArray(firestoreVal) || firestoreVal.length === 0) && Array.isArray(localVal) && localVal.length > 0) {
+          (cleanGlobalData as any)[key] = localVal;
+          (missingFieldsToSync as any)[key] = localVal;
+        }
+      });
+
       mergedSettings = {
         ...mergedSettings,
         ...cleanGlobalData,
         customGeminiApiKey: data.customGeminiApiKey || currentApiKey || undefined
       };
+
+      if (Object.keys(missingFieldsToSync).length > 0 && !quotaState.isExhausted) {
+        safeFirestoreWrite("seedMissingGlobalLists", () => setDoc(globalRef, missingFieldsToSync, { merge: true }));
+      }
+
       if (data.customGeminiApiKey) {
         saveDedicatedGeminiApiKey(data.customGeminiApiKey).catch(() => {});
         fetch("/api/config/gemini-key", {
@@ -641,6 +836,9 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
       safeFirestoreWrite("seedInitialGlobalSettings", () => setDoc(globalRef, cleanGlobal));
     }
   }, (err) => {
+    if (isQuotaError(err)) {
+      markQuotaExhausted(err?.message);
+    }
     console.warn("Error in onSnapshot for settings/global:", err?.message || err);
   });
   unsubscribes.push(unsubGlobal);
@@ -653,16 +851,54 @@ export const subscribeSettings = (callback: (settings: Settings) => void) => {
         .map((d) => ({ id: d.id, ...d.data() }))
         .filter((x: any) => x && x.id && !deletedItemIds.has(x.id)) as any[];
 
-      // Exact authoritative state from Firestore subcollection
-      mergedSettings = { ...mergedSettings, [field]: items };
-      const idbKey = fieldToIdbKey[field];
-      if (idbKey) idbSet(idbKey, items).catch(() => {});
-      triggerCallback();
+      const localExisting = (((mergedSettings as any)[field] || []) as any[])
+        .filter((x: any) => x && x.id && !deletedItemIds.has(x.id));
+
+      if (items.length > 0) {
+        // Authoritative merge:
+        // Include all updated docs from Firestore
+        // PLUS preserve any local items not yet synced to Firestore (as long as they weren't explicitly deleted)
+        const firestoreMap = new Map<string, any>(items.map((it) => [it.id, it]));
+        const mergedList: any[] = [...items];
+
+        localExisting.forEach((localItem) => {
+          if (localItem && localItem.id && !firestoreMap.has(localItem.id) && !deletedItemIds.has(localItem.id)) {
+            mergedList.push(localItem);
+          }
+        });
+
+        mergedSettings = { ...mergedSettings, [field]: mergedList };
+        const idbKey = fieldToIdbKey[field];
+        if (idbKey) idbSet(idbKey, mergedList).catch(() => {});
+        triggerCallback();
+      } else {
+        // If Firestore returns 0 items (e.g. during quota limit or fresh unseeded collection),
+        // NEVER wipe out existing materials loaded from IndexedDB or Server Cache!
+        if (localExisting.length > 0) {
+          mergedSettings = { ...mergedSettings, [field]: localExisting };
+          triggerCallback();
+        } else {
+          mergedSettings = { ...mergedSettings, [field]: [] };
+          triggerCallback();
+        }
+      }
     }, (err) => {
+      if (isQuotaError(err)) {
+        markQuotaExhausted(err?.message);
+      }
       console.warn(`Error in onSnapshot for settings/global/${field}:`, err?.message || err);
     });
     unsubscribes.push(unsubCol);
   });
+
+  // 3. Realtime WebSocket Broadcast subscription for instant catalog/settings synchronization
+  const unsubRealtimeSettings = realtimeSync.subscribeSettings((realtimeSettings) => {
+    if (realtimeSettings && typeof realtimeSettings === "object") {
+      mergedSettings = { ...mergedSettings, ...realtimeSettings };
+      triggerCallback();
+    }
+  });
+  unsubscribes.push(unsubRealtimeSettings);
 
   return () => {
     unsubscribes.forEach((u) => u());
@@ -939,7 +1175,12 @@ const isGlobalSettingsEqual = (s1: Partial<Settings> | null, s2: Partial<Setting
   );
 };
 
+export const getCurrentCachedSettings = (): Settings | null => currentCachedSettings;
+
 export const firebaseStorage = {
+  getCurrentCachedSettings(): Settings | null {
+    return currentCachedSettings;
+  },
   async saveJob(job: Job): Promise<void> {
     const data = {
       ...job,
@@ -955,6 +1196,9 @@ export const firebaseStorage = {
       localStorage.setItem("curtain_jobs", JSON.stringify(current));
       await idbSet(PERMANENT_KEYS.JOBS, current);
     } catch {}
+
+    // Realtime broadcast to all devices immediately
+    realtimeSync.broadcastJobSave(data);
 
     await safeFirestoreWrite("saveJob", () => setDoc(doc(db, "jobs", job.id), data));
   },
@@ -975,6 +1219,9 @@ export const firebaseStorage = {
       await idbSet(PERMANENT_KEYS.WINDOWS, filteredWins);
     } catch {}
 
+    // Realtime broadcast job deletion to all devices
+    realtimeSync.broadcastJobDelete(id);
+
     await safeFirestoreWrite("deleteJob", () => deleteDoc(doc(db, "jobs", id)));
   },
 
@@ -990,6 +1237,10 @@ export const firebaseStorage = {
     } catch {}
 
     const uploadedWin = await uploadWindowImages(win);
+
+    // Realtime broadcast window to all devices
+    realtimeSync.broadcastWindowSave(uploadedWin);
+
     await safeFirestoreWrite("saveWindow", () => setDoc(doc(db, "windows", uploadedWin.id), uploadedWin));
   },
 
@@ -1002,6 +1253,7 @@ export const firebaseStorage = {
         localStorage.setItem(LOCAL_STORAGE_KEYS.WINDOWS, JSON.stringify(current));
         localStorage.setItem("curtain_windows", JSON.stringify(current));
         await idbSet(PERMANENT_KEYS.WINDOWS, current);
+        realtimeSync.broadcastWindowSave(current[idx]);
       }
     } catch {}
 
@@ -1020,6 +1272,9 @@ export const firebaseStorage = {
       await idbSet(PERMANENT_KEYS.WINDOWS, filtered);
     } catch {}
 
+    // Realtime broadcast window deletion
+    realtimeSync.broadcastWindowDelete(id);
+
     await safeFirestoreWrite("deleteWindow", () => deleteDoc(doc(db, "windows", id)));
   },
 
@@ -1033,6 +1288,9 @@ export const firebaseStorage = {
       localStorage.setItem(LOCAL_STORAGE_KEYS.EMPLOYEES, JSON.stringify(list));
     } catch {}
 
+    // Realtime broadcast employee save
+    realtimeSync.broadcastEmployeeSave(emp);
+
     await safeFirestoreWrite("saveEmployee", () => setDoc(doc(db, "employees", emp.id), emp));
   },
 
@@ -1045,12 +1303,43 @@ export const firebaseStorage = {
       }
     } catch {}
 
+    // Realtime broadcast employee deletion
+    realtimeSync.broadcastEmployeeDelete(id);
+
     await safeFirestoreWrite("deleteEmployee", () => deleteDoc(doc(db, "employees", id)));
   },
 
-  async saveSettings(settings: Settings, onProgress?: (percent: number) => void): Promise<void> {
+  async saveSettings(
+    settings: Settings,
+    onProgress?: (percent: number) => void,
+    options?: { allowEmptyWipe?: boolean }
+  ): Promise<void> {
     const updatedSettings = { ...settings };
     const prevCached = currentCachedSettings ? JSON.parse(JSON.stringify(currentCachedSettings)) : null;
+
+    // Safeguard: For all material arrays, if incoming settings array is empty or undefined,
+    // but we have cached data, preserve the cached data unless allowEmptyWipe is explicitly true!
+    const materialArrayKeys = [
+      "solidFabricMaterials",
+      "sheerFabricMaterials",
+      "blindMaterials",
+      "rollerMaterials",
+      "blindTapeMaterials",
+      "styleMaterials",
+      "hemMaterials",
+      "trackMaterials",
+      "accessoryMaterials",
+    ] as const;
+
+    if (!options?.allowEmptyWipe && prevCached) {
+      materialArrayKeys.forEach((k) => {
+        const incoming = (updatedSettings as any)[k];
+        const cachedArr = (prevCached as any)[k];
+        if ((!Array.isArray(incoming) || incoming.length === 0) && Array.isArray(cachedArr) && cachedArr.length > 0) {
+          (updatedSettings as any)[k] = cachedArr;
+        }
+      });
+    }
     
     // Save or clear Dedicated Gemini API Key
     if (updatedSettings.customGeminiApiKey && updatedSettings.customGeminiApiKey.trim().length > 5) {
@@ -1076,6 +1365,8 @@ export const firebaseStorage = {
         idbSet(PERMANENT_KEYS.BLIND_TAPE_MATERIALS, updatedSettings.blindTapeMaterials || []),
         idbSet(PERMANENT_KEYS.STYLE_MATERIALS, updatedSettings.styleMaterials || []),
         idbSet(PERMANENT_KEYS.HEM_MATERIALS, updatedSettings.hemMaterials || []),
+        idbSet(PERMANENT_KEYS.TRACK_MATERIALS, updatedSettings.trackMaterials || []),
+        idbSet(PERMANENT_KEYS.ACCESSORY_MATERIALS, updatedSettings.accessoryMaterials || []),
       ]);
     } catch (idbErr) {
       console.warn("IndexedDB settings write notice:", idbErr);
@@ -1087,17 +1378,22 @@ export const firebaseStorage = {
       console.warn("LocalStorage settings save warning (handled by IndexedDB):", err);
     }
 
+    // Realtime broadcast settings to all connected devices immediately
+    realtimeSync.broadcastSettings(updatedSettings);
+
     const cached = prevCached;
 
     // Determine which parts actually changed to avoid redundant uploads and writes
-    const styleChanged = !cached || !isCollectionEqual(settings.styleMaterials, cached.styleMaterials);
-    const hemChanged = !cached || !isCollectionEqual(settings.hemMaterials, cached.hemMaterials);
-    const solidChanged = !cached || !isCollectionEqual(settings.solidFabricMaterials, cached.solidFabricMaterials);
-    const sheerChanged = !cached || !isCollectionEqual(settings.sheerFabricMaterials, cached.sheerFabricMaterials);
-    const blindChanged = !cached || !isCollectionEqual(settings.blindMaterials, cached.blindMaterials);
-    const rollerChanged = !cached || !isCollectionEqual(settings.rollerMaterials, cached.rollerMaterials);
-    const blindTapeChanged = !cached || !isCollectionEqual(settings.blindTapeMaterials, cached.blindTapeMaterials);
-    const globalChanged = !cached || !isGlobalSettingsEqual(settings, cached);
+    const styleChanged = !cached || !isCollectionEqual(updatedSettings.styleMaterials, cached.styleMaterials);
+    const hemChanged = !cached || !isCollectionEqual(updatedSettings.hemMaterials, cached.hemMaterials);
+    const solidChanged = !cached || !isCollectionEqual(updatedSettings.solidFabricMaterials, cached.solidFabricMaterials);
+    const sheerChanged = !cached || !isCollectionEqual(updatedSettings.sheerFabricMaterials, cached.sheerFabricMaterials);
+    const blindChanged = !cached || !isCollectionEqual(updatedSettings.blindMaterials, cached.blindMaterials);
+    const rollerChanged = !cached || !isCollectionEqual(updatedSettings.rollerMaterials, cached.rollerMaterials);
+    const blindTapeChanged = !cached || !isCollectionEqual(updatedSettings.blindTapeMaterials, cached.blindTapeMaterials);
+    const trackChanged = !cached || !isCollectionEqual(updatedSettings.trackMaterials, cached.trackMaterials);
+    const accessoryChanged = !cached || !isCollectionEqual(updatedSettings.accessoryMaterials, cached.accessoryMaterials);
+    const globalChanged = !cached || !isGlobalSettingsEqual(updatedSettings, cached);
 
     // Calculate total items to upload in changed collections only
     let totalToUpload = 0;
@@ -1144,29 +1440,6 @@ export const firebaseStorage = {
         updateProgress();
       }
 
-      // Helper for array of materials
-      const uploadMaterials = async <T extends { id: string; imageBase64?: string }>(
-        materials: T[] | undefined,
-        folder: string
-      ): Promise<T[] | undefined> => {
-        if (!materials) return undefined;
-        return await runWithConcurrency(
-          materials,
-          async (m) => {
-            if (m.imageBase64 && m.imageBase64.startsWith("data:image/")) {
-              const url = await uploadImageIfBase64(
-                m.imageBase64,
-                `settings/${folder}/${m.id}.jpg`
-              );
-              updateProgress();
-              return { ...m, imageBase64: url || m.imageBase64 };
-            }
-            return m;
-          },
-          8
-        );
-      };
-
       if (onProgress) onProgress(85);
 
       // Split the settings into separate document structures
@@ -1178,22 +1451,43 @@ export const firebaseStorage = {
         blindMaterials,
         rollerMaterials,
         blindTapeMaterials,
+        trackMaterials,
+        accessoryMaterials,
         ...globalSettings
       } = updatedSettings;
 
       // Immediately write latest clean collections to permanent IndexedDB keys to prevent stale restorations
-      await Promise.allSettled([
-        idbSet(PERMANENT_KEYS.SETTINGS, updatedSettings),
-        idbSet(PERMANENT_KEYS.SOLID_FABRICS, solidFabricMaterials || []),
-        idbSet(PERMANENT_KEYS.SHEER_FABRICS, sheerFabricMaterials || []),
-        idbSet(PERMANENT_KEYS.BLIND_MATERIALS, blindMaterials || []),
-        idbSet(PERMANENT_KEYS.ROLLER_MATERIALS, rollerMaterials || []),
-        idbSet(PERMANENT_KEYS.BLIND_TAPE_MATERIALS, blindTapeMaterials || []),
-        idbSet(PERMANENT_KEYS.STYLE_MATERIALS, styleMaterials || []),
-        idbSet(PERMANENT_KEYS.HEM_MATERIALS, hemMaterials || []),
-        idbSet(PERMANENT_KEYS.TRACK_MATERIALS, updatedSettings.trackMaterials || []),
-        idbSet(PERMANENT_KEYS.ACCESSORY_MATERIALS, updatedSettings.accessoryMaterials || []),
-      ]);
+      const idbPromises: Promise<any>[] = [
+        idbSet(PERMANENT_KEYS.SETTINGS, updatedSettings)
+      ];
+      if (Array.isArray(solidFabricMaterials) && (solidFabricMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.SOLID_FABRICS, solidFabricMaterials));
+      }
+      if (Array.isArray(sheerFabricMaterials) && (sheerFabricMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.SHEER_FABRICS, sheerFabricMaterials));
+      }
+      if (Array.isArray(blindMaterials) && (blindMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.BLIND_MATERIALS, blindMaterials));
+      }
+      if (Array.isArray(rollerMaterials) && (rollerMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.ROLLER_MATERIALS, rollerMaterials));
+      }
+      if (Array.isArray(blindTapeMaterials) && (blindTapeMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.BLIND_TAPE_MATERIALS, blindTapeMaterials));
+      }
+      if (Array.isArray(styleMaterials) && (styleMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.STYLE_MATERIALS, styleMaterials));
+      }
+      if (Array.isArray(hemMaterials) && (hemMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.HEM_MATERIALS, hemMaterials));
+      }
+      if (Array.isArray(trackMaterials) && (trackMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.TRACK_MATERIALS, trackMaterials));
+      }
+      if (Array.isArray(accessoryMaterials) && (accessoryMaterials.length > 0 || options?.allowEmptyWipe)) {
+        idbPromises.push(idbSet(PERMANENT_KEYS.ACCESSORY_MATERIALS, accessoryMaterials));
+      }
+      await Promise.allSettled(idbPromises);
 
       // Save general/global options and bundle to Firestore
       if (globalChanged) {
@@ -1204,7 +1498,7 @@ export const firebaseStorage = {
       fetch("/api/catalog/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ catalog: updatedSettings }),
+        body: JSON.stringify({ catalog: updatedSettings, allowEmptyWipe: options?.allowEmptyWipe }),
       }).catch(() => {});
 
       if (updatedSettings.customGeminiApiKey) {
@@ -1223,8 +1517,8 @@ export const firebaseStorage = {
         { id: "blindMaterials", items: blindMaterials || [], hasChanged: blindChanged },
         { id: "rollerMaterials", items: rollerMaterials || [], hasChanged: rollerChanged },
         { id: "blindTapeMaterials", items: blindTapeMaterials || [], hasChanged: blindTapeChanged },
-        { id: "trackMaterials", items: (updatedSettings.trackMaterials || []) as any[], hasChanged: true },
-        { id: "accessoryMaterials", items: (updatedSettings.accessoryMaterials || []) as any[], hasChanged: true },
+        { id: "trackMaterials", items: trackMaterials || [], hasChanged: trackChanged },
+        { id: "accessoryMaterials", items: accessoryMaterials || [], hasChanged: accessoryChanged },
       ];
 
       // Save each material list to individual docs in subcollection and keep metadata
@@ -1245,14 +1539,19 @@ export const firebaseStorage = {
               const batchOps: ((batch: WriteBatch) => void)[] = [];
 
               if (col.items.length === 0) {
-                // If user cleared this category, delete all existing docs in subcollection
-                try {
-                  const snap = await getDocs(collection(db, "settings", "global", col.id));
-                  snap.docs.forEach((docSnap) => {
-                    batchOps.push((batch) => batch.delete(docSnap.ref));
-                  });
-                } catch (delErr) {
-                  console.warn(`Error querying subcollection for deletion ${col.id}:`, delErr);
+                // If user explicitly confirmed clearing this category, delete all existing docs in subcollection
+                if (options?.allowEmptyWipe) {
+                  try {
+                    const snap = await getDocs(collection(db, "settings", "global", col.id));
+                    snap.docs.forEach((docSnap) => {
+                      batchOps.push((batch) => batch.delete(docSnap.ref));
+                    });
+                  } catch (delErr) {
+                    console.warn(`Error querying subcollection for deletion ${col.id}:`, delErr);
+                  }
+                } else {
+                  // Safeguard: do not wipe subcollection if allowEmptyWipe is not granted
+                  return;
                 }
               } else {
                 const currentItemIds = new Set<string>();
@@ -1269,11 +1568,11 @@ export const firebaseStorage = {
                   }
                 });
 
-                // Also delete any removed items
+                // ONLY delete explicit user-deleted items, never unmentioned items during partial updates!
                 const cachedCol = cached ? ((cached as any)[col.id] as any[]) : undefined;
-                if (cachedCol) {
+                if (cachedCol && Array.isArray(cachedCol) && cachedCol.length > 0) {
                   cachedCol.forEach((oldItem: any) => {
-                    if (oldItem && oldItem.id && (!currentItemIds.has(oldItem.id) || deletedItemIds.has(oldItem.id))) {
+                    if (oldItem && oldItem.id && deletedItemIds.has(oldItem.id)) {
                       const docRef = doc(db, "settings", "global", col.id, oldItem.id);
                       batchOps.push((batch) => batch.delete(docRef));
                     }
@@ -1304,6 +1603,73 @@ export const firebaseStorage = {
     if (onProgress) {
       onProgress(100);
     }
+  },
+
+  async saveGlobalSettings(partialSettings: Partial<Settings>): Promise<void> {
+    // 1. Separate safe global fields from material collections to guarantee ZERO data loss
+    const {
+      styleMaterials,
+      hemMaterials,
+      solidFabricMaterials,
+      sheerFabricMaterials,
+      blindMaterials,
+      rollerMaterials,
+      blindTapeMaterials,
+      trackMaterials,
+      accessoryMaterials,
+      ...safeGlobalUpdates
+    } = partialSettings;
+
+    // 2. Merge into in-memory cached settings safely
+    if (currentCachedSettings) {
+      currentCachedSettings = {
+        ...currentCachedSettings,
+        ...safeGlobalUpdates,
+      };
+    } else {
+      currentCachedSettings = {
+        ...DEFAULT_SETTINGS,
+        ...safeGlobalUpdates,
+      };
+    }
+
+    // 3. Handle Gemini API key if present
+    if (safeGlobalUpdates.customGeminiApiKey !== undefined) {
+      const key = safeGlobalUpdates.customGeminiApiKey?.trim();
+      if (key && key.length > 5) {
+        await saveDedicatedGeminiApiKey(key);
+        fetch("/api/config/gemini-key", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ apiKey: key }),
+        }).catch(() => {});
+      } else {
+        await removeDedicatedGeminiApiKey();
+      }
+    }
+
+    // 4. Update localStorage and IndexedDB (only settings document, materials remain untouched)
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.SETTINGS, JSON.stringify(currentCachedSettings));
+    } catch {}
+    idbSet(PERMANENT_KEYS.SETTINGS, currentCachedSettings).catch(() => {});
+
+    // Broadcast updated global settings across all clients in real-time
+    if (currentCachedSettings) {
+      realtimeSync.broadcastSettings(currentCachedSettings);
+    }
+
+    // 5. Update server disk cache with allowEmptyWipe: false
+    fetch("/api/catalog/sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ catalog: currentCachedSettings, allowEmptyWipe: false }),
+    }).catch(() => {});
+
+    // 6. Write ONLY the safe global fields to Firestore settings/global with merge
+    await safeFirestoreWrite("saveGlobalSettings", async () => {
+      await setDoc(doc(db, "settings", "global"), safeGlobalUpdates, { merge: true });
+    });
   },
 
   async saveSingleMaterial<T extends { id: string }>(
@@ -1341,6 +1707,9 @@ export const firebaseStorage = {
       try {
         localStorage.setItem(LOCAL_STORAGE_KEYS.SETTINGS, JSON.stringify(currentCachedSettings));
       } catch {}
+
+      // Realtime broadcast material to all connected devices immediately
+      realtimeSync.broadcastMaterialSave(collectionKey, item);
 
       // Sync updated full catalog to server cache
       fetch("/api/catalog/sync", {
@@ -1386,11 +1755,14 @@ export const firebaseStorage = {
         localStorage.setItem(LOCAL_STORAGE_KEYS.SETTINGS, JSON.stringify(currentCachedSettings));
       } catch {}
 
+      // Realtime broadcast material deletion to all connected devices immediately
+      realtimeSync.broadcastMaterialDelete(collectionKey, itemId);
+
       // Sync updated full catalog to server cache
       fetch("/api/catalog/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ catalog: currentCachedSettings }),
+        body: JSON.stringify({ catalog: currentCachedSettings, allowEmptyWipe: list.length === 0 }),
       }).catch(() => {});
     }
 

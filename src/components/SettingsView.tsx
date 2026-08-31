@@ -1431,52 +1431,44 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   // Style operations
-  const handleAddStyle = (e: React.FormEvent) => {
+  const handleAddStyle = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newStyleName.trim()) return;
     const styleMaterials = settings.styleMaterials || [];
     const opsList = newStyleOps.split(",").map((s) => s.trim()).filter(Boolean);
 
-    if (editingStyleId) {
-      // Edit Mode
-      const updated = styleMaterials.map((item) =>
-        item.id === editingStyleId
-          ? {
-              ...item,
-              name: newStyleName.trim(),
-              category: newStyleCategory,
-              operationOptions: opsList.length > 0 ? opsList : undefined,
-              imageBase64: newStyleImg || undefined,
-              styleEnForAi: newStyleEnForAi.trim() || undefined,
-            }
-          : item
-      );
+    const targetId = editingStyleId || generateId();
+    const existing = styleMaterials.find((x) => x.id === targetId);
+
+    const newItem: StyleMaterial = {
+      ...(existing || {}),
+      id: targetId,
+      name: newStyleName.trim(),
+      category: newStyleCategory,
+      operationOptions: opsList.length > 0 ? opsList : undefined,
+      imageBase64: newStyleImg || existing?.imageBase64 || undefined,
+      styleEnForAi: newStyleEnForAi.trim() || undefined,
+    };
+
+    if (onSaveSingleMaterial) {
+      await onSaveSingleMaterial("styleMaterials", newItem);
+    } else {
+      const updated = editingStyleId
+        ? styleMaterials.map((item) => (item.id === editingStyleId ? newItem : item))
+        : [...styleMaterials, newItem];
       onSaveSettings({
         ...settings,
         styleMaterials: updated,
       });
-      setEditingStyleId(null);
-    } else {
-      // Create Mode
-      const newItem: StyleMaterial = {
-        id: generateId(),
-        name: newStyleName.trim(),
-        category: newStyleCategory,
-        operationOptions: opsList.length > 0 ? opsList : undefined,
-        imageBase64: newStyleImg || undefined,
-        styleEnForAi: newStyleEnForAi.trim() || undefined,
-      };
-      onSaveSettings({
-        ...settings,
-        styleMaterials: [...styleMaterials, newItem],
-      });
     }
 
+    if (editingStyleId) setEditingStyleId(null);
     setNewStyleName("");
     setNewStyleCategory("curtain");
     setNewStyleOps("รวบซ้าย, รวบขวา, แยกกลาง");
     setNewStyleImg("");
     setNewStyleEnForAi("");
+    showToast(editingStyleId ? "✓ แก้ไขรูปแบบม่านเรียบร้อยแล้ว" : "✓ เพิ่มรูปแบบม่านใหม่เรียบร้อยแล้ว", "success");
   };
 
   const handleRemoveStyle = async (id: string) => {
@@ -1495,42 +1487,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   // Hem operations
-  const handleAddHem = (e: React.FormEvent) => {
+  const handleAddHem = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newHemName.trim()) return;
     const hemMaterials = settings.hemMaterials || [];
 
-    if (editingHemId) {
-      // Edit Mode
-      const updated = hemMaterials.map((item) =>
-        item.id === editingHemId
-          ? {
-              ...item,
-              name: newHemName.trim(),
-              imageBase64: newHemImg || undefined,
-            }
-          : item
-      );
+    const targetId = editingHemId || generateId();
+    const existing = hemMaterials.find((x) => x.id === targetId);
+
+    const newItem: HemMaterial = {
+      ...(existing || {}),
+      id: targetId,
+      name: newHemName.trim(),
+      imageBase64: newHemImg || existing?.imageBase64 || undefined,
+    };
+
+    if (onSaveSingleMaterial) {
+      await onSaveSingleMaterial("hemMaterials", newItem);
+    } else {
+      const updated = editingHemId
+        ? hemMaterials.map((item) => (item.id === editingHemId ? newItem : item))
+        : [...hemMaterials, newItem];
       onSaveSettings({
         ...settings,
         hemMaterials: updated,
       }, true);
-      setEditingHemId(null);
-    } else {
-      // Create Mode
-      const newItem: HemMaterial = {
-        id: generateId(),
-        name: newHemName.trim(),
-        imageBase64: newHemImg || undefined,
-      };
-      onSaveSettings({
-        ...settings,
-        hemMaterials: [...hemMaterials, newItem],
-      }, true);
     }
 
+    if (editingHemId) setEditingHemId(null);
     setNewHemName("");
     setNewHemImg("");
+    showToast(editingHemId ? "✓ แก้ไขระยะชายม่านเรียบร้อยแล้ว" : "✓ เพิ่มระยะชายม่านเรียบร้อยแล้ว", "success");
   };
 
   const handleRemoveHem = async (id: string) => {
@@ -1568,22 +1555,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     if (editingSolidId) {
       // Edit Mode
-      const updated = list.map((item) =>
-        item.id === editingSolidId
-          ? {
-              ...item,
-              name: bName,
-              colorName: cName,
-              type: fabricType,
-              imageBase64: finalImg,
-            }
-          : item
-      );
-      onSaveSettings({
-        ...settings,
-        solidFabricMaterials: updated,
-      }, true);
+      const existing = list.find((x) => x.id === editingSolidId);
+      const updatedItem: FabricMaterial = {
+        ...(existing || {}),
+        id: editingSolidId,
+        name: bName,
+        colorName: cName,
+        type: fabricType,
+        imageBase64: finalImg || existing?.imageBase64,
+      };
+
+      if (onSaveSingleMaterial) {
+        await onSaveSingleMaterial("solidFabricMaterials", updatedItem);
+      } else {
+        const updated = list.map((item) => (item.id === editingSolidId ? updatedItem : item));
+        onSaveSettings({
+          ...settings,
+          solidFabricMaterials: updated,
+        }, true);
+      }
       setEditingSolidId(null);
+      showToast("✓ แก้ไขผ้าทึบเรียบร้อยแล้ว", "success");
     } else {
       // Check for duplicate brand + color
       const matchFound = findExistingSwatchMatch(
@@ -1615,10 +1607,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         type: fabricType,
         imageBase64: finalImg,
       };
-      onSaveSettings({
-        ...settings,
-        solidFabricMaterials: [...list, newItem],
-      }, true);
+
+      if (onSaveSingleMaterial) {
+        await onSaveSingleMaterial("solidFabricMaterials", newItem);
+      } else {
+        onSaveSettings({
+          ...settings,
+          solidFabricMaterials: [...list, newItem],
+        }, true);
+      }
+      showToast("✓ เพิ่มผ้าทึบใหม่เรียบร้อยแล้ว", "success");
     }
 
     setFabricBrand("");
@@ -1662,22 +1660,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     if (editingSheerId) {
       // Edit Mode
-      const updated = list.map((item) =>
-        item.id === editingSheerId
-          ? {
-              ...item,
-              name: bName,
-              colorName: cName,
-              type: "Sheer",
-              imageBase64: finalImg,
-            }
-          : item
-      );
-      onSaveSettings({
-        ...settings,
-        sheerFabricMaterials: updated,
-      }, true);
+      const existing = list.find((x) => x.id === editingSheerId);
+      const updatedItem: FabricMaterial = {
+        ...(existing || {}),
+        id: editingSheerId,
+        name: bName,
+        colorName: cName,
+        type: "Sheer",
+        imageBase64: finalImg || existing?.imageBase64,
+      };
+
+      if (onSaveSingleMaterial) {
+        await onSaveSingleMaterial("sheerFabricMaterials", updatedItem);
+      } else {
+        const updated = list.map((item) => (item.id === editingSheerId ? updatedItem : item));
+        onSaveSettings({
+          ...settings,
+          sheerFabricMaterials: updated,
+        }, true);
+      }
       setEditingSheerId(null);
+      showToast("✓ แก้ไขผ้าโปร่งเรียบร้อยแล้ว", "success");
     } else {
       // Check for duplicate brand + color
       const matchFound = findExistingSwatchMatch(
@@ -1709,10 +1712,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         type: "Sheer",
         imageBase64: finalImg,
       };
-      onSaveSettings({
-        ...settings,
-        sheerFabricMaterials: [...list, newItem],
-      }, true);
+
+      if (onSaveSingleMaterial) {
+        await onSaveSingleMaterial("sheerFabricMaterials", newItem);
+      } else {
+        onSaveSettings({
+          ...settings,
+          sheerFabricMaterials: [...list, newItem],
+        }, true);
+      }
+      showToast("✓ เพิ่มผ้าโปร่งใหม่เรียบร้อยแล้ว", "success");
     }
 
     setFabricBrand("");
@@ -1746,6 +1755,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const bName = blindName.trim().toUpperCase();
     const cName = blindColorName.trim().toUpperCase();
 
+    let targetKey: "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" = "blindMaterials";
+    if (blindType === "Roller Shades") {
+      targetKey = "rollerMaterials";
+    } else if (blindType === "Fabric Tape") {
+      targetKey = "blindTapeMaterials";
+    }
+
     let finalImg = blindImg || undefined;
     if (finalImg && isDriveConnected() && finalImg.startsWith("data:")) {
       try {
@@ -1758,19 +1774,49 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     // If editing, first filter out the old item from whichever list it was in
     if (editingBlindId) {
-      blindMaterials = blindMaterials.filter((x) => x.id !== editingBlindId);
-      rollerMaterials = rollerMaterials.filter((x) => x.id !== editingBlindId);
-      blindTapeMaterials = blindTapeMaterials.filter((x) => x.id !== editingBlindId);
+      const currentList = targetKey === "rollerMaterials" ? rollerMaterials : targetKey === "blindTapeMaterials" ? blindTapeMaterials : blindMaterials;
+      const existing = currentList.find((x) => x.id === editingBlindId);
+
+      const updatedItem: FabricMaterial = {
+        ...(existing || {}),
+        id: editingBlindId,
+        name: bName,
+        colorName: cName,
+        type: blindType,
+        imageBase64: finalImg || existing?.imageBase64,
+      };
+
+      if (onSaveSingleMaterial) {
+        await onSaveSingleMaterial(targetKey, updatedItem);
+      } else {
+        blindMaterials = blindMaterials.filter((x) => x.id !== editingBlindId);
+        rollerMaterials = rollerMaterials.filter((x) => x.id !== editingBlindId);
+        blindTapeMaterials = blindTapeMaterials.filter((x) => x.id !== editingBlindId);
+
+        if (blindType === "Wood Blinds" || blindType === "Aluminum Blinds") {
+          blindMaterials.push(updatedItem);
+        } else if (blindType === "Roller Shades") {
+          rollerMaterials.push(updatedItem);
+        } else if (blindType === "Fabric Tape") {
+          blindTapeMaterials.push(updatedItem);
+        }
+
+        onSaveSettings({
+          ...settings,
+          blindMaterials,
+          rollerMaterials,
+          blindTapeMaterials,
+        }, true);
+      }
+      setEditingBlindId(null);
+      showToast("✓ แก้ไขรายการเรียบร้อยแล้ว", "success");
     } else {
       // Check for duplicate in target group
       let targetList = blindMaterials;
-      let targetKey: "blindMaterials" | "rollerMaterials" | "blindTapeMaterials" = "blindMaterials";
       if (blindType === "Roller Shades") {
         targetList = rollerMaterials;
-        targetKey = "rollerMaterials";
       } else if (blindType === "Fabric Tape") {
         targetList = blindTapeMaterials;
-        targetKey = "blindTapeMaterials";
       }
 
       const matchFound = findExistingSwatchMatch(
@@ -1794,32 +1840,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         });
         return;
       }
+
+      const newItem: FabricMaterial = {
+        id: generateId(),
+        name: bName,
+        colorName: cName,
+        type: blindType,
+        imageBase64: finalImg,
+      };
+
+      if (onSaveSingleMaterial) {
+        await onSaveSingleMaterial(targetKey, newItem);
+      } else {
+        if (blindType === "Wood Blinds" || blindType === "Aluminum Blinds") {
+          blindMaterials.push(newItem);
+        } else if (blindType === "Roller Shades") {
+          rollerMaterials.push(newItem);
+        } else if (blindType === "Fabric Tape") {
+          blindTapeMaterials.push(newItem);
+        }
+
+        onSaveSettings({
+          ...settings,
+          blindMaterials,
+          rollerMaterials,
+          blindTapeMaterials,
+        }, true);
+      }
+      showToast("✓ เพิ่มรายการใหม่เรียบร้อยแล้ว", "success");
     }
 
-    const newItem: FabricMaterial = {
-      id: editingBlindId || generateId(),
-      name: bName,
-      colorName: cName,
-      type: blindType,
-      imageBase64: finalImg,
-    };
-
-    if (blindType === "Wood Blinds" || blindType === "Aluminum Blinds") {
-      blindMaterials.push(newItem);
-    } else if (blindType === "Roller Shades") {
-      rollerMaterials.push(newItem);
-    } else if (blindType === "Fabric Tape") {
-      blindTapeMaterials.push(newItem);
-    }
-
-    onSaveSettings({
-      ...settings,
-      blindMaterials,
-      rollerMaterials,
-      blindTapeMaterials,
-    }, true);
-
-    setEditingBlindId(null);
     setBlindName("");
     setBlindColorName("");
     setBlindImg("");
@@ -1984,30 +2034,45 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const [nameText, setNameText] = useState("");
     const [editingId, setEditingId] = useState<string | null>(null);
 
-    const handleSave = () => {
+    const handleSave = async () => {
       if (!nameText.trim()) return;
-      let updated = [...items];
 
       if (editingId) {
         // Edit Mode
-        updated = updated.map((item) => (item.id === editingId ? { ...item, name: nameText.trim() } : item));
+        const existing = items.find((x) => x.id === editingId);
+        const updatedItem = { ...(existing || {}), id: editingId, name: nameText.trim() };
+        if (onSaveSingleMaterial) {
+          await onSaveSingleMaterial(fieldKey, updatedItem);
+        } else {
+          const updated = items.map((item) => (item.id === editingId ? updatedItem : item));
+          onSaveSettings({ ...settings, [fieldKey]: updated }, true);
+        }
         setEditingId(null);
       } else {
         // Create Mode
-        if (updated.some((x) => x.name.toLowerCase() === nameText.trim().toLowerCase())) {
+        if (items.some((x) => x.name.toLowerCase() === nameText.trim().toLowerCase())) {
           showToast("มีชื่อนี้ในระบบแล้ว", "error");
           return;
         }
-        updated.push({ id: generateId(), name: nameText.trim() });
+        const newItem = { id: generateId(), name: nameText.trim() };
+        if (onSaveSingleMaterial) {
+          await onSaveSingleMaterial(fieldKey, newItem);
+        } else {
+          onSaveSettings({ ...settings, [fieldKey]: [...items, newItem] }, true);
+        }
       }
 
-      onSaveSettings({ ...settings, [fieldKey]: updated }, true);
       setNameText("");
       showToast(editingId ? "✓ อัปเดตรายการเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)" : "✓ เพิ่มรายการเรียบร้อยแล้ว (⚡ ทันใจ 0 วิ)", "success");
     };
 
-    const handleRemove = (id: string) => {
-      onSaveSettings({ ...settings, [fieldKey]: items.filter((x) => x.id !== id) }, true);
+    const handleRemove = async (id: string) => {
+      markItemDeleted(id);
+      if (onDeleteSingleMaterial) {
+        await onDeleteSingleMaterial(fieldKey, id);
+      } else {
+        onSaveSettings({ ...settings, [fieldKey]: items.filter((x) => x.id !== id) }, true);
+      }
       showToast("✓ ลบรายการเรียบร้อยแล้ว", "info");
     };
 

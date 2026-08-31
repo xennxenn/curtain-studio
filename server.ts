@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
@@ -15,6 +16,43 @@ const __filenameResolved = typeof __filename !== "undefined"
 const __dirnameResolved = typeof __dirname !== "undefined"
   ? __dirname
   : path.dirname(__filenameResolved);
+
+const DATA_DIR = path.join(process.cwd(), "data");
+const CONFIG_FILE_PATH = path.join(DATA_DIR, "server-data-cache.json");
+
+// Helper to safely persist server cache to disk
+function saveServerDataToDisk(apiKey: string | null, catalog: any) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    const payload = {
+      apiKey: apiKey || null,
+      catalog: catalog || null,
+      savedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+  } catch (err) {
+    console.warn("Failed to write server data cache to disk:", err);
+  }
+}
+
+// Helper to load server cache from disk on startup
+function loadServerDataFromDisk(): { apiKey: string | null; catalog: any } {
+  try {
+    if (fs.existsSync(CONFIG_FILE_PATH)) {
+      const raw = fs.readFileSync(CONFIG_FILE_PATH, "utf-8");
+      const parsed = JSON.parse(raw);
+      return {
+        apiKey: parsed.apiKey || null,
+        catalog: parsed.catalog || null,
+      };
+    }
+  } catch (err) {
+    console.warn("Failed to load server data cache from disk:", err);
+  }
+  return { apiKey: null, catalog: null };
+}
 
 // Helper function to resolve image payload (base64 or HTTP/HTTPS url)
 async function resolveImagePayload(imageInput: string): Promise<{ mimeType: string; data: string } | null> {
@@ -60,17 +98,23 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  // Load server-side persisted data from disk if available
+  const initialDiskData = loadServerDataFromDisk();
+
   // Central stored API key in memory (set by Admin)
-  let serverConfiguredApiKey: string | null = null;
+  let serverConfiguredApiKey: string | null = initialDiskData.apiKey;
 
   // Central in-memory catalog sync cache
-  let serverCatalogCache: any = null;
+  let serverCatalogCache: any = initialDiskData.catalog;
 
   // Shared lazy initializer for Gemini Client
   let aiClient: GoogleGenAI | null = null;
   function getGeminiClient(customApiKey?: string) {
     if (customApiKey && typeof customApiKey === "string" && customApiKey.trim().length > 10) {
-      serverConfiguredApiKey = customApiKey.trim();
+      if (serverConfiguredApiKey !== customApiKey.trim()) {
+        serverConfiguredApiKey = customApiKey.trim();
+        saveServerDataToDisk(serverConfiguredApiKey, serverCatalogCache);
+      }
     }
     const keyToUse = (serverConfiguredApiKey && serverConfiguredApiKey.trim().length > 10)
       ? serverConfiguredApiKey.trim()
@@ -110,6 +154,7 @@ async function startServer() {
     const { catalog } = req.body;
     if (catalog && typeof catalog === "object") {
       serverCatalogCache = catalog;
+      saveServerDataToDisk(serverConfiguredApiKey, serverCatalogCache);
       res.json({ success: true, message: "บันทึกข้อมูลแคตตาล็อกบนเซิร์ฟเวอร์เรียบร้อยแล้ว" });
     } else {
       res.status(400).json({ success: false, message: "ข้อมูลแคตตาล็อกไม่ถูกต้อง" });
@@ -132,9 +177,11 @@ async function startServer() {
     const { apiKey } = req.body;
     if (apiKey && typeof apiKey === "string" && apiKey.trim().length > 10) {
       serverConfiguredApiKey = apiKey.trim();
+      saveServerDataToDisk(serverConfiguredApiKey, serverCatalogCache);
       res.json({ success: true, message: "บันทึก API Key กลางบนเซิร์ฟเวอร์เรียบร้อยแล้ว ทุกเครื่องสามารถใช้งานได้ทันที" });
     } else if (apiKey === "" || apiKey === null) {
       serverConfiguredApiKey = null;
+      saveServerDataToDisk(serverConfiguredApiKey, serverCatalogCache);
       res.json({ success: true, message: "ยกเลิก API Key กลางบนเซิร์ฟเวอร์เรียบร้อยแล้ว" });
     } else {
       res.status(400).json({ success: false, message: "รูปแบบ API Key ไม่ถูกต้อง" });

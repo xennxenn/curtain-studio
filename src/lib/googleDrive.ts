@@ -551,9 +551,14 @@ export async function downloadBackupFromDrive(fileId: string): Promise<any> {
   if (!token) throw new Error("ไม่ได้เข้าสู่ระบบ Google Drive");
 
   const downloadUrl = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  
   const res = await fetch(downloadUrl, {
     headers: { Authorization: `Bearer ${token}` },
+    signal: controller.signal,
   });
+  clearTimeout(timer);
 
   if (!res.ok) {
     throw new Error(`HTTP ${res.status}: ไม่สามารถดาวน์โหลดไฟล์สำรองข้อมูลจาก Google Drive ได้`);
